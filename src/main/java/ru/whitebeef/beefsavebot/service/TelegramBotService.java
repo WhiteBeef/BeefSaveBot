@@ -12,7 +12,6 @@ import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendVideo;
-import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.User;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
@@ -62,19 +61,12 @@ public class TelegramBotService extends TelegramLongPollingBot {
 
     File file = null;
     try {
-      //file = downloadService.downloadVideo(text);
+      file = downloadService.downloadVideo(text);
 
-      log.info("PRE START");
       execute(SendVideo.builder()
           .chatId(chatId.toString())
-          .video(new InputFile(downloadService.downloadVideoStream(text), "video.mp4"))
+          .video(new org.telegram.telegrambots.meta.api.objects.InputFile(file))
           .build());
-      log.info("SENDED inputstream");
-      execute(SendVideo.builder()
-          .chatId(chatId.toString())
-          .video(new org.telegram.telegrambots.meta.api.objects.InputFile(file = downloadService.downloadVideo(text)))
-          .build());
-      log.info("SENDED video");
     } catch (Exception e) {
       log.error("Ошибка при обработке видео {}: {}", text, e.getMessage());
       try {
