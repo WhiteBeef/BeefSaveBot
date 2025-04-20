@@ -42,4 +42,7 @@ public class RequestLog {
   @CreatedDate
   @Column(name = "requested_at")
   private LocalDateTime requestedAt;
+
+  @Column(name = "downloaded")
+  private Boolean downloaded = false;
 }

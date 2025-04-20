@@ -13,5 +13,5 @@ public class RequestDto {
 
   private UserInfoDto userInfoDto;
   private String url;
-
+  private Boolean downloaded;
 }

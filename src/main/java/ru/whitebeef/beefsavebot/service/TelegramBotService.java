@@ -10,9 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
-import org.telegram.telegrambots.meta.api.methods.send.SendAnimation;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
-import org.telegram.telegrambots.meta.api.methods.send.SendVenue;
 import org.telegram.telegrambots.meta.api.methods.send.SendVideo;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.User;
@@ -21,6 +19,7 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 import ru.whitebeef.beefsavebot.configuration.BotConfiguration;
 import ru.whitebeef.beefsavebot.dto.RequestDto;
 import ru.whitebeef.beefsavebot.dto.UserInfoDto;
+import ru.whitebeef.beefsavebot.entity.RequestLog;
 
 @Slf4j
 @Service
@@ -51,7 +50,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
     Long chatId = update.getMessage().getChatId();
     User user = update.getMessage().getFrom();
 
-    requestService.saveRequest(RequestDto.builder()
+    RequestLog requestLog = requestService.saveRequest(RequestDto.builder()
         .url(text)
         .userInfoDto(UserInfoDto.builder()
             .username(user.getUserName())
@@ -72,6 +71,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
           .chatId(chatId.toString())
           .video(new org.telegram.telegrambots.meta.api.objects.InputFile(file))
           .build());
+      requestLog.setDownloaded(true);
+      requestService.save(requestLog);
     } catch (Exception e) {
       log.error("Ошибка при обработке видео {}: {}", text, e.getMessage());
       try {

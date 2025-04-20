@@ -16,13 +16,18 @@ public class RequestService {
   private final UserService userService;
 
   @Transactional
-  public void saveRequest(RequestDto requestDto) {
+  public RequestLog saveRequest(RequestDto requestDto) {
     UserInfo userinfo = userService.updateOrCreate(requestDto.getUserInfoDto());
 
-    requestLogRepository.save(RequestLog.builder()
+    return requestLogRepository.save(RequestLog.builder()
         .userInfo(userinfo)
         .url(requestDto.getUrl())
         .build());
+  }
+
+  @Transactional
+  public RequestLog save(RequestLog requestLog) {
+    return requestLogRepository.save(requestLog);
   }
 
 }

@@ -1,16 +1,21 @@
-.PHONY: build run rebuild dev clean
+.PHONY: build docker-build run rebuild rebuild_dev clean dev
 
 build:
 	mvnw clean package -DskipTests
-	docker-compose build telegram-bot
+
+docker-build:
+	docker build -t telegram-bot:latest .
 
 run:
 	docker-compose up -d
 
-rebuild: build run
-
-dev: build
+dev:
 	docker-compose -f docker-compose.dev.yml up -d
 
+rebuild: build docker-build run
+
+rebuild_dev: build docker-build dev
+
 clean:
-	docker-compose down -v --rmi all
+	mvnw clean
+	docker-compose down -v --rmi local
