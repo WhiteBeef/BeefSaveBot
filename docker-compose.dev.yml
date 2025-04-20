@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: tgbot_postgres
+    environment:
+      POSTGRES_DB: telegrambot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  telegram-bot:
+    build: .
+    working_dir: /app
+    volumes:
+      - ./src:/app/src:cached
+      - ./target:/app/target:cached
+      - ./downloads:/app/downloads:cached
+    ports:
+      - "5005:5005"
+    command: java -jar target/BeefSaveBot-0.0.1-SNAPSHOT.jar
+    environment:
+      JAVA_TOOL_OPTIONS: -agentlib:jdwp=transport=dt_socket,address=0.0.0.0:5005,server=y,suspend=n
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/telegrambot
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
