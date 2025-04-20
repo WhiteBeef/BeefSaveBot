@@ -17,7 +17,7 @@ public class UserService {
   private final UserInfoMapper userInfoMapper;
 
   @Transactional
-  public UserInfo findOrCreate(UserInfoDto userInfoDto) {
+  public UserInfo updateOrCreate(UserInfoDto userInfoDto) {
     Optional<UserInfo> optionalUserInfo = userInfoRepository.findByTelegramUserId(
         userInfoDto.getTelegramUserId());
 

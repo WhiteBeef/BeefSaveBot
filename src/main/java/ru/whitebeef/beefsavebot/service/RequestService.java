@@ -17,7 +17,7 @@ public class RequestService {
 
   @Transactional
   public void saveRequest(RequestDto requestDto) {
-    UserInfo userinfo = userService.findOrCreate(requestDto.getUserInfoDto());
+    UserInfo userinfo = userService.updateOrCreate(requestDto.getUserInfoDto());
 
     requestLogRepository.save(RequestLog.builder()
         .userInfo(userinfo)
