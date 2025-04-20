@@ -10,7 +10,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
+import org.telegram.telegrambots.meta.api.methods.send.SendAnimation;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.send.SendVenue;
 import org.telegram.telegrambots.meta.api.methods.send.SendVideo;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.User;
@@ -61,8 +63,11 @@ public class TelegramBotService extends TelegramLongPollingBot {
 
     File file = null;
     try {
+      execute(SendMessage.builder()
+          .chatId(chatId.toString())
+          .text("Ваше видео выгружается.. Ожидайте!")
+          .build());
       file = downloadService.downloadVideo(text);
-
       execute(SendVideo.builder()
           .chatId(chatId.toString())
           .video(new org.telegram.telegrambots.meta.api.objects.InputFile(file))
