@@ -26,3 +26,11 @@ update-jar: build
 	docker cp target/extracted/application/. $(shell docker-compose ps -q telegram-bot):/app/
 	docker-compose restart
 	if exist target\extracted rmdir /s /q target\extracted
+
+jdk-install:
+	sudo apt-get install openjdk-17-jdk
+
+docker-install:
+	sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-compose -y
+
+start: jdk-install build docker-install docker-build run
