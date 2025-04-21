@@ -7,7 +7,7 @@ else
 endif
 
 build:
-	$(MVN_CMD)mvnw clean package -DskipTests
+	$(MVN_CMD) clean package -DskipTests
 
 docker-build:
 	docker build -t telegram-bot:latest .
@@ -23,7 +23,7 @@ rebuild: build docker-build run
 rebuild_dev: build docker-build dev
 
 clean:
-	$(MVN_CMD)mvnw clean
+	$(MVN_CMD) clean
 	docker-compose down -v --rmi local
 
 update-jar: build
