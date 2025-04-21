@@ -1,4 +1,4 @@
-.PHONY: build docker-build run rebuild rebuild_dev clean dev
+.PHONY: build docker-build run rebuild rebuild_dev clean dev update-jar
 
 build:
 	mvnw clean package -DskipTests
@@ -19,3 +19,10 @@ rebuild_dev: build docker-build dev
 clean:
 	mvnw clean
 	docker-compose down -v --rmi local
+
+update-jar: build
+	if not exist target\extracted mkdir target\extracted
+	java -Djarmode=layertools -jar target\BeefSaveBot-0.0.1-SNAPSHOT.jar extract --destination target\extracted
+	docker cp target/extracted/application/. $(shell docker-compose ps -q telegram-bot):/app/
+	docker-compose restart
+	if exist target\extracted rmdir /s /q target\extracted

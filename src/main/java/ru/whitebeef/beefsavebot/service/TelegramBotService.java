@@ -52,6 +52,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
 
     RequestLog requestLog = requestService.saveRequest(RequestDto.builder()
         .url(text)
+        .downloaded(false)
         .userInfoDto(UserInfoDto.builder()
             .username(user.getUserName())
             .firstName(user.getFirstName())

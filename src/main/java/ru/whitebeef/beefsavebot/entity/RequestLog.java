@@ -44,5 +44,5 @@ public class RequestLog {
   private LocalDateTime requestedAt;
 
   @Column(name = "downloaded")
-  private Boolean downloaded = false;
+  private Boolean downloaded;
 }

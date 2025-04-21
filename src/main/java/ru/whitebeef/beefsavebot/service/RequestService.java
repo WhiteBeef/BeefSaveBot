@@ -6,6 +6,7 @@ import org.springframework.transaction.annotation.Transactional;
 import ru.whitebeef.beefsavebot.dto.RequestDto;
 import ru.whitebeef.beefsavebot.entity.RequestLog;
 import ru.whitebeef.beefsavebot.entity.UserInfo;
+import ru.whitebeef.beefsavebot.mappers.RequestLogMapper;
 import ru.whitebeef.beefsavebot.repository.RequestLogRepository;
 
 @Service
@@ -14,15 +15,14 @@ public class RequestService {
 
   private final RequestLogRepository requestLogRepository;
   private final UserService userService;
+  private final RequestLogMapper requestLogMapper;
 
   @Transactional
   public RequestLog saveRequest(RequestDto requestDto) {
     UserInfo userinfo = userService.updateOrCreate(requestDto.getUserInfoDto());
 
-    return requestLogRepository.save(RequestLog.builder()
-        .userInfo(userinfo)
-        .url(requestDto.getUrl())
-        .build());
+    return requestLogRepository.save(
+        requestLogMapper.enrich(RequestLog.builder().userInfo(userinfo).build(), requestDto));
   }
 
   @Transactional
