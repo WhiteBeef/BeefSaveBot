@@ -5,6 +5,8 @@ import jakarta.annotation.PostConstruct;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -20,6 +22,7 @@ import ru.whitebeef.beefsavebot.configuration.BotConfiguration;
 import ru.whitebeef.beefsavebot.dto.RequestDto;
 import ru.whitebeef.beefsavebot.dto.UserInfoDto;
 import ru.whitebeef.beefsavebot.entity.RequestLog;
+import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 
 @Slf4j
 @Service
@@ -27,8 +30,9 @@ import ru.whitebeef.beefsavebot.entity.RequestLog;
 public class TelegramBotService extends TelegramLongPollingBot {
 
   private final BotConfiguration botConfig;
-  private final DownloadService downloadService;
+  private final VideoDownloadService videoDownloadService;
   private final RequestService requestService;
+  private final ExecutorService executorService = Executors.newFixedThreadPool(10);
 
   @PostConstruct
   public void registerBot() throws Exception {
@@ -45,13 +49,16 @@ public class TelegramBotService extends TelegramLongPollingBot {
     if (!update.hasMessage() || !update.getMessage().hasText()) {
       return;
     }
+    executorService.execute(() -> this.executeUpdate(update));
+  }
 
-    String text = update.getMessage().getText();
+  public void executeUpdate(Update update) {
+    String url = update.getMessage().getText();
     Long chatId = update.getMessage().getChatId();
     User user = update.getMessage().getFrom();
 
     RequestLog requestLog = requestService.saveRequest(RequestDto.builder()
-        .url(text)
+        .url(url)
         .downloaded(false)
         .userInfoDto(UserInfoDto.builder()
             .username(user.getUserName())
@@ -63,11 +70,30 @@ public class TelegramBotService extends TelegramLongPollingBot {
 
     File file = null;
     try {
+      if (!videoDownloadService.canDownloadVideo(url)) {
+        execute(SendMessage.builder()
+            .chatId(chatId.toString())
+            .text(
+                "Я пока не умею обрабатывать видео этого типа!\nВот сайты, откуда я умею скачивать видео:\n\n"
+                    + videoDownloadService.getSupportedSites()
+                    + "\n\nСвяжитесь с @WhiteBeef, если вам необходим какой-то сайт, которого нет в списке :0")
+            .build());
+        return;
+      }
+
       execute(SendMessage.builder()
           .chatId(chatId.toString())
           .text("Ваше видео выгружается.. Ожидайте!")
           .build());
-      file = downloadService.downloadVideo(text);
+      file = videoDownloadService.downloadVideo(url);
+      long size = Files.size(file.toPath());
+      if (size > 50_000_000L) {
+        execute(SendMessage.builder()
+            .chatId(chatId.toString())
+            .text("К сожалению видео слишком длинное :(\nМаксимальный размер - 50Мб!")
+            .build());
+        return;
+      }
       execute(SendVideo.builder()
           .chatId(chatId.toString())
           .video(new org.telegram.telegrambots.meta.api.objects.InputFile(file))
@@ -75,7 +101,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
       requestLog.setDownloaded(true);
       requestService.save(requestLog);
     } catch (Exception e) {
-      log.error("Ошибка при обработке видео {}: {}", text, e.getMessage());
+      log.error("Ошибка при обработке видео {}: {}", url, e.getMessage());
       try {
         execute(SendMessage.builder()
             .chatId(chatId.toString())
