@@ -6,6 +6,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Predicate;
@@ -19,6 +20,7 @@ import org.springframework.stereotype.Service;
 @Slf4j
 public class YoutubeDownloadService implements DownloadService {
 
+  private static final Long MAX_HEIGHT = 1080L;
   private static final Long MAX_BYTES = 50L * 1024 * 1024;
   private static final Predicate<String> PATTERN_PREDICATE = Pattern.compile(
           "^(?:https?://)?(?:www\\.|m\\.)?(?:youtube\\.com/(?:watch\\?v=|shorts/|embed/)|youtu\\.be/)([\\w-]{11})(?:[?&]\\S*)?$")
@@ -28,76 +30,86 @@ public class YoutubeDownloadService implements DownloadService {
     try {
       ObjectMapper mapper = new ObjectMapper();
 
-      ProcessBuilder pbMeta = new ProcessBuilder("yt-dlp", "-j", url);
-      Process meta = pbMeta.start();
-      String json = new String(meta.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-      if (meta.waitFor() != 0) {
+      log.info("Запрос на получение метаданных");
+      ProcessBuilder metadataProcessBuilder = new ProcessBuilder("yt-dlp",
+          "--no-playlist",
+          "-j", url);
+      Process metadataProcess = metadataProcessBuilder.start();
+      String metadataJson = new String(metadataProcess.getInputStream().readAllBytes(),
+          StandardCharsets.UTF_8);
+      if (metadataProcess.waitFor() != 0) {
         throw new RuntimeException("Не удалось получить метаданные");
       }
-
-      JsonNode root = mapper.readTree(json);
+      log.info("Метаданные получены");
+      JsonNode root = mapper.readTree(metadataJson);
       JsonNode formats = root.path("formats");
       if (!formats.isArray()) {
         throw new RuntimeException("Нет массива formats в JSON");
       }
 
-      List<Candidate> cands = new ArrayList<>();
-      List<JsonNode> videos = new ArrayList<>(), audios = new ArrayList<>(), muxed = new ArrayList<>();
+      List<Candidate> candidates = new ArrayList<>();
+      List<JsonNode> videos = new ArrayList<>(), audios = new ArrayList<>(), muxeds = new ArrayList<>();
 
-      for (JsonNode f : formats) {
-        String id = f.path("format_id").asText(null);
+      for (JsonNode format : formats) {
+        String id = format.path("format_id").asText(null);
         if (id == null) {
           continue;
         }
-        long size = f.has("filesize") ? f.get("filesize").asLong(-1)
-            : f.has("filesize_approx") ? f.get("filesize_approx").asLong(-1)
+        long size = format.has("filesize") ? format.get("filesize").asLong(-1)
+            : format.has("filesize_approx") ? format.get("filesize_approx").asLong(-1)
                 : -1;
         if (size < 0) {
           continue;
         }
-        String ac = f.path("acodec").asText("none"), vc = f.path("vcodec").asText("none");
-        boolean hasV = !"none".equals(vc), hasA = !"none".equals(ac);
-        if (hasV && hasA) {
-          muxed.add(f);
-        } else if (hasV) {
-          videos.add(f);
-        } else if (hasA) {
-          audios.add(f);
+        String audioCodec = format.path("acodec").asText("none");
+        String videoCodec = format.path("vcodec").asText("none");
+        boolean hasVideo = !"none".equals(videoCodec);
+        boolean hasAudio = !"none".equals(audioCodec);
+        if (hasVideo && hasAudio) {
+          muxeds.add(format);
+        } else if (hasVideo) {
+          videos.add(format);
+        } else if (hasAudio) {
+          audios.add(format);
         }
       }
 
-      for (JsonNode v : videos) {
-        int vh = v.path("height").asInt(0);
-        if (vh > 720) {
+      for (JsonNode video : videos) {
+        int videoHeight = video.path("height").asInt(0);
+        if (videoHeight > MAX_HEIGHT) {
           continue;
         }
-        String vid = v.path("format_id").asText();
-        long vsz =
-            v.has("filesize") ? v.get("filesize").asLong() : v.get("filesize_approx").asLong();
-        for (JsonNode a : audios) {
-          String aid = a.path("format_id").asText();
-          long asz =
-              a.has("filesize") ? a.get("filesize").asLong() : a.get("filesize_approx").asLong();
-          if (vsz + asz <= MAX_BYTES) {
-            cands.add(new Candidate(vid + "+" + aid, vh));
+        String vid = video.path("format_id").asText();
+        long videoSize =
+            video.has("filesize") ? video.get("filesize").asLong()
+                : video.get("filesize_approx").asLong();
+        for (JsonNode audio : audios) {
+          String aid = audio.path("format_id").asText();
+          long audioSize =
+              audio.has("filesize") ? audio.get("filesize").asLong()
+                  : audio.get("filesize_approx").asLong();
+          if (videoSize + audioSize <= MAX_BYTES) {
+            candidates.add(new Candidate(vid + "+" + aid, videoHeight));
           }
         }
       }
-      for (JsonNode m : muxed) {
-        int mh = m.path("height").asInt(0);
-        long msz =
-            m.has("filesize") ? m.get("filesize").asLong() : m.get("filesize_approx").asLong();
-        if (mh <= 720 && msz <= MAX_BYTES) {
-          cands.add(new Candidate(m.path("format_id").asText(), mh));
+      for (JsonNode muxed : muxeds) {
+        int muxedHeight = muxed.path("height").asInt(0);
+        long muxedSize =
+            muxed.has("filesize") ? muxed.get("filesize").asLong()
+                : muxed.get("filesize_approx").asLong();
+        if (muxedHeight <= MAX_HEIGHT && muxedSize <= MAX_BYTES) {
+          candidates.add(new Candidate(muxed.path("format_id").asText(), muxedHeight));
         }
       }
 
-      cands.sort((a, b) -> Integer.compare(b.height, a.height));
-      if (cands.isEmpty()) {
+      candidates.sort((a, b) -> Integer.compare(b.height, a.height));
+      if (candidates.isEmpty()) {
         throw new RuntimeException("Ни один кандидат ≤50MB не найден");
       }
-
-      for (Candidate c : cands) {
+      log.info("Кандидаты собраны. Количество: {}", candidates.size());
+      for (Candidate c : candidates) {
+        log.info("Попытка скачать видео с размером {}", c.height);
         String base = "video_" + UUID.randomUUID();
         String outTpl = base + ".%(ext)s";
 
