@@ -87,7 +87,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
           .build());
       file = videoDownloadService.downloadVideo(url);
       long size = Files.size(file.toPath());
-      if (size > 50_000_000L) {
+      log.info("Размер файла: {} bytes", size);
+      if (size > 50L * 1024 * 1024) {
         execute(SendMessage.builder()
             .chatId(chatId.toString())
             .text("К сожалению видео слишком длинное :(\nМаксимальный размер - 50Мб!")
