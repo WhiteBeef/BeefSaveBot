@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
@@ -73,15 +74,15 @@ public class YoutubeDownloadService implements DownloadService {
         }
       }
 
+      List<JsonNode> compatibleMuxeds = muxeds.stream()
+          .filter(m -> m.path("vcodec").asText().startsWith("avc1")) // H.264
+          .filter(m -> m.path("acodec").asText().startsWith("mp4a")).toList();
+
       List<JsonNode> h264Videos = videos.stream()
-          .filter(video -> "h264".equals(video.path("vcodec").asText())).toList();
+          .filter(v -> v.path("vcodec").asText().startsWith("avc1")).toList();
 
       List<JsonNode> aacAudios = audios.stream()
-          .filter(audio -> "aac".equals(audio.path("acodec").asText())).toList();
-
-      List<JsonNode> compatibleMuxeds = muxeds.stream()
-          .filter(muxed -> "h264".equals(muxed.path("vcodec").asText()) && "aac".equals(
-              muxed.path("acodec").asText())).toList();
+          .filter(a -> a.path("acodec").asText().startsWith("mp4a")).toList();
 
       for (JsonNode muxed : compatibleMuxeds) {
         int muxedHeight = muxed.path("height").asInt(0);
