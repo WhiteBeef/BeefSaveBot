@@ -6,7 +6,6 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Predicate;
@@ -74,32 +73,42 @@ public class YoutubeDownloadService implements DownloadService {
         }
       }
 
-      for (JsonNode video : videos) {
-        int videoHeight = video.path("height").asInt(0);
-        if (videoHeight > MAX_HEIGHT) {
-          continue;
-        }
-        String vid = video.path("format_id").asText();
-        long videoSize =
-            video.has("filesize") ? video.get("filesize").asLong()
-                : video.get("filesize_approx").asLong();
-        for (JsonNode audio : audios) {
-          String aid = audio.path("format_id").asText();
-          long audioSize =
-              audio.has("filesize") ? audio.get("filesize").asLong()
-                  : audio.get("filesize_approx").asLong();
-          if (videoSize + audioSize <= MAX_BYTES) {
-            candidates.add(new Candidate(vid + "+" + aid, videoHeight));
-          }
-        }
-      }
-      for (JsonNode muxed : muxeds) {
+      List<JsonNode> h264Videos = videos.stream()
+          .filter(video -> "h264".equals(video.path("vcodec").asText())).toList();
+
+      List<JsonNode> aacAudios = audios.stream()
+          .filter(audio -> "aac".equals(audio.path("acodec").asText())).toList();
+
+      List<JsonNode> compatibleMuxeds = muxeds.stream()
+          .filter(muxed -> "h264".equals(muxed.path("vcodec").asText()) && "aac".equals(
+              muxed.path("acodec").asText())).toList();
+
+      for (JsonNode muxed : compatibleMuxeds) {
         int muxedHeight = muxed.path("height").asInt(0);
-        long muxedSize =
-            muxed.has("filesize") ? muxed.get("filesize").asLong()
-                : muxed.get("filesize_approx").asLong();
+        long muxedSize = muxed.has("filesize") ? muxed.get("filesize").asLong()
+            : muxed.get("filesize_approx").asLong();
         if (muxedHeight <= MAX_HEIGHT && muxedSize <= MAX_BYTES) {
           candidates.add(new Candidate(muxed.path("format_id").asText(), muxedHeight));
+        }
+      }
+
+      if (candidates.isEmpty()) {
+        for (JsonNode video : h264Videos) {
+          int videoHeight = video.path("height").asInt(0);
+          if (videoHeight > MAX_HEIGHT) {
+            continue;
+          }
+          String vid = video.path("format_id").asText();
+          long videoSize = video.has("filesize") ? video.get("filesize").asLong()
+              : video.get("filesize_approx").asLong();
+          for (JsonNode audio : aacAudios) {
+            String aid = audio.path("format_id").asText();
+            long audioSize = audio.has("filesize") ? audio.get("filesize").asLong()
+                : audio.get("filesize_approx").asLong();
+            if (videoSize + audioSize <= MAX_BYTES) {
+              candidates.add(new Candidate(vid + "+" + aid, videoHeight));
+            }
+          }
         }
       }
 
@@ -159,7 +168,6 @@ public class YoutubeDownloadService implements DownloadService {
   @Data
   @AllArgsConstructor
   private static class Candidate {
-
     private String combo;
     private int height;
   }
