@@ -47,7 +47,6 @@ public class InstagramDownloadService implements DownloadService {
         throw new RuntimeException("Нет массива formats в JSON");
       }
       log.info("Найдено форматов: {}", formats.size());
-
       List<Candidate> candidates = new ArrayList<>();
       List<JsonNode> videos = new ArrayList<>(), audios = new ArrayList<>(), muxeds = new ArrayList<>();
 
@@ -88,6 +87,7 @@ public class InstagramDownloadService implements DownloadService {
 
       log.info("Форматы сгруппированы: muxed={}, video={}, audio={}",
           muxeds.size(), videos.size(), audios.size());
+
       List<JsonNode> compatibleMuxeds = muxeds.stream()
           .filter(m -> isCompatibleVideoCodec(m.path("vcodec").asText()))
           .filter(m -> isCompatibleAudioCodec(m.path("acodec").asText())).toList();
