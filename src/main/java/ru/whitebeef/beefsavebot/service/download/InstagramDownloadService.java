@@ -31,8 +31,9 @@ public class InstagramDownloadService implements DownloadService {
     try {
       ObjectMapper mapper = new ObjectMapper();
 
-      log.info("Запрос на получение метаданных");
+      log.info("Запрос на получение метаданных для {}", url);
       ProcessBuilder metadataProcessBuilder = new ProcessBuilder(buildMetadataCommand(url));
+      log.debug("Команда получения метаданных: {}", String.join(" ", metadataProcessBuilder.command()));
       Process metadataProcess = metadataProcessBuilder.start();
       String metadataJson = new String(metadataProcess.getInputStream().readAllBytes(),
           StandardCharsets.UTF_8);
@@ -45,7 +46,7 @@ public class InstagramDownloadService implements DownloadService {
       if (!formats.isArray()) {
         throw new RuntimeException("Нет массива formats в JSON");
       }
-
+      log.info("Найдено форматов: {}", formats.size());
       List<Candidate> candidates = new ArrayList<>();
       List<JsonNode> videos = new ArrayList<>(), audios = new ArrayList<>(), muxeds = new ArrayList<>();
 
@@ -71,7 +72,21 @@ public class InstagramDownloadService implements DownloadService {
         } else if (hasAudio) {
           audios.add(format);
         }
+        log.debug(
+            "format_id={} vcodec={} acodec={} height={} width={} filesize={} approx={} tbr={}",
+            id,
+            videoCodec,
+            audioCodec,
+            format.path("height").asText("-"),
+            format.path("width").asText("-"),
+            format.has("filesize") ? format.path("filesize").asText("-") : "-",
+            format.has("filesize_approx") ? format.path("filesize_approx").asText("-") : "-",
+            format.has("tbr") ? format.path("tbr").asText("-") : "-"
+        );
       }
+
+      log.info("Форматы сгруппированы: muxed={}, video={}, audio={}",
+          muxeds.size(), videos.size(), audios.size());
 
       List<JsonNode> compatibleMuxeds = muxeds.stream()
           .filter(m -> isCompatibleVideoCodec(m.path("vcodec").asText()))
@@ -82,6 +97,8 @@ public class InstagramDownloadService implements DownloadService {
 
       List<JsonNode> aacAudios = audios.stream()
           .filter(a -> isCompatibleAudioCodec(a.path("acodec").asText())).toList();
+      log.info("Совместимые кодеки: muxed={}, video={}, audio={}",
+          compatibleMuxeds.size(), h264Videos.size(), aacAudios.size());
 
       for (JsonNode muxed : compatibleMuxeds) {
         int muxedHeight = muxed.path("height").asInt(0);
