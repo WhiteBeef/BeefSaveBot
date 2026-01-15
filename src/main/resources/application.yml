@@ -20,6 +20,13 @@ telegram:
     token: ${TELEGRAM_BOT_TOKEN}
     username: ${TELEGRAM_BOT_USERNAME}
 
+download:
+  max-bytes: ${DOWNLOAD_MAX_BYTES:52428800}
+  max-height: ${DOWNLOAD_MAX_HEIGHT:1080}
+  max-resolution: ${DOWNLOAD_MAX_RESOLUTION:1080}
+  yt-dlp:
+    user-agent: ${DOWNLOAD_YT_DLP_USER_AGENT:}
+
 logging:
   level:
     sql: debug
