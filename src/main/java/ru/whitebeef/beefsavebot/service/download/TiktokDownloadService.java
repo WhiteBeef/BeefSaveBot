@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
 
 import java.io.File;
 import java.io.IOException;
@@ -18,10 +20,10 @@ import java.util.regex.Pattern;
 
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class TiktokDownloadService implements DownloadService {
 
-    private static final Long MAX_RESOLUTION = 1080L;
-    private static final Long MAX_BYTES = 50L * 1024 * 1024;
+    private final DownloadConfiguration downloadConfiguration;
     private static final Predicate<String> PATTERN_PREDICATE = Pattern.compile(
                     "^https:\\/\\/(www\\.)?(vm\\.|vt\\.)?tiktok\\.com\\/.+$")
             .asMatchPredicate();
@@ -90,7 +92,8 @@ public class TiktokDownloadService implements DownloadService {
                 int minDim = Math.min(muxedWidth, muxedHeight);
                 long muxedSize = muxed.has("filesize") ? muxed.get("filesize").asLong()
                         : muxed.get("filesize_approx").asLong();
-                if (minDim <= MAX_RESOLUTION && muxedSize <= MAX_BYTES) {
+                if (minDim <= downloadConfiguration.getMaxResolution()
+                    && muxedSize <= downloadConfiguration.getMaxBytes()) {
                     candidates.add(new Candidate(muxed.path("format_id").asText(), minDim));
                 }
             }
@@ -100,7 +103,7 @@ public class TiktokDownloadService implements DownloadService {
                     int videoHeight = video.path("height").asInt(0);
                     int videoWidth = video.path("width").asInt(0);
                     int minDim = Math.min(videoWidth, videoHeight);
-                    if (minDim > MAX_RESOLUTION) {
+                    if (minDim > downloadConfiguration.getMaxResolution()) {
                         continue;
                     }
                     String vid = video.path("format_id").asText();
@@ -110,7 +113,7 @@ public class TiktokDownloadService implements DownloadService {
                         String aid = audio.path("format_id").asText();
                         long audioSize = audio.has("filesize") ? audio.get("filesize").asLong()
                                 : audio.get("filesize_approx").asLong();
-                        if (videoSize + audioSize <= MAX_BYTES) {
+                        if (videoSize + audioSize <= downloadConfiguration.getMaxBytes()) {
                             candidates.add(new Candidate(vid + "+" + aid, minDim));
                         }
                     }
@@ -146,7 +149,7 @@ public class TiktokDownloadService implements DownloadService {
                     continue;
                 }
                 long actual = file.length();
-                if (actual <= MAX_BYTES) {
+                if (actual <= downloadConfiguration.getMaxBytes()) {
                     return file;
                 } else {
                     file.delete();

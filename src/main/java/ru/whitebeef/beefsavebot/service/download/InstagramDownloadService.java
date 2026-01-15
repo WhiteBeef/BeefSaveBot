@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -21,21 +20,20 @@ import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
 @Service
 @Slf4j
 @RequiredArgsConstructor
-public class YoutubeDownloadService implements DownloadService {
+public class InstagramDownloadService implements DownloadService {
 
   private final DownloadConfiguration downloadConfiguration;
   private static final Predicate<String> PATTERN_PREDICATE = Pattern.compile(
-          "^(?:https?://)?(?:www\\.|m\\.)?(?:youtube\\.com/(?:watch\\?v=|shorts/|embed/)|youtu\\.be/)([\\w-]{11})(?:[?&]\\S*)?$")
+          "^(?:https?://)?(?:www\\.)?instagram\\.com/(?:p|reel|tv)/[\\w-]+/?(?:\\?.*)?$")
       .asMatchPredicate();
 
   public File downloadVideo(String url) {
     try {
       ObjectMapper mapper = new ObjectMapper();
 
-      log.info("Запрос на получение метаданных");
-      ProcessBuilder metadataProcessBuilder = new ProcessBuilder("yt-dlp",
-          "--no-playlist",
-          "-j", url);
+      log.info("Запрос на получение метаданных для {}", url);
+      ProcessBuilder metadataProcessBuilder = new ProcessBuilder(buildMetadataCommand(url));
+      log.debug("Команда получения метаданных: {}", String.join(" ", metadataProcessBuilder.command()));
       Process metadataProcess = metadataProcessBuilder.start();
       String metadataJson = new String(metadataProcess.getInputStream().readAllBytes(),
           StandardCharsets.UTF_8);
@@ -48,6 +46,7 @@ public class YoutubeDownloadService implements DownloadService {
       if (!formats.isArray()) {
         throw new RuntimeException("Нет массива formats в JSON");
       }
+      log.info("Найдено форматов: {}", formats.size());
 
       List<Candidate> candidates = new ArrayList<>();
       List<JsonNode> videos = new ArrayList<>(), audios = new ArrayList<>(), muxeds = new ArrayList<>();
@@ -74,17 +73,32 @@ public class YoutubeDownloadService implements DownloadService {
         } else if (hasAudio) {
           audios.add(format);
         }
+        log.debug(
+            "format_id={} vcodec={} acodec={} height={} width={} filesize={} approx={} tbr={}",
+            id,
+            videoCodec,
+            audioCodec,
+            format.path("height").asText("-"),
+            format.path("width").asText("-"),
+            format.has("filesize") ? format.path("filesize").asText("-") : "-",
+            format.has("filesize_approx") ? format.path("filesize_approx").asText("-") : "-",
+            format.has("tbr") ? format.path("tbr").asText("-") : "-"
+        );
       }
 
+      log.info("Форматы сгруппированы: muxed={}, video={}, audio={}",
+          muxeds.size(), videos.size(), audios.size());
       List<JsonNode> compatibleMuxeds = muxeds.stream()
-          .filter(m -> m.path("vcodec").asText().startsWith("avc1")) // H.264
-          .filter(m -> m.path("acodec").asText().startsWith("mp4a")).toList();
+          .filter(m -> isCompatibleVideoCodec(m.path("vcodec").asText()))
+          .filter(m -> isCompatibleAudioCodec(m.path("acodec").asText())).toList();
 
       List<JsonNode> h264Videos = videos.stream()
-          .filter(v -> v.path("vcodec").asText().startsWith("avc1")).toList();
+          .filter(v -> isCompatibleVideoCodec(v.path("vcodec").asText())).toList();
 
       List<JsonNode> aacAudios = audios.stream()
-          .filter(a -> a.path("acodec").asText().startsWith("mp4a")).toList();
+          .filter(a -> isCompatibleAudioCodec(a.path("acodec").asText())).toList();
+      log.info("Совместимые кодеки: muxed={}, video={}, audio={}",
+          compatibleMuxeds.size(), h264Videos.size(), aacAudios.size());
 
       for (JsonNode muxed : compatibleMuxeds) {
         int muxedHeight = muxed.path("height").asInt(0);
@@ -126,14 +140,7 @@ public class YoutubeDownloadService implements DownloadService {
         String base = "video_" + UUID.randomUUID();
         String outTpl = base + ".%(ext)s";
 
-        ProcessBuilder pbDl = new ProcessBuilder(
-            "yt-dlp",
-            "--no-playlist",
-            "--merge-output-format", "mp4",
-            "-f", c.combo,
-            "-o", outTpl,
-            url
-        );
+        ProcessBuilder pbDl = new ProcessBuilder(buildDownloadCommand(url, outTpl, c.combo));
         pbDl.inheritIO();
         Process dl = pbDl.start();
         if (dl.waitFor() != 0) {
@@ -166,7 +173,48 @@ public class YoutubeDownloadService implements DownloadService {
 
   @Override
   public List<String> getSupportedSites() {
-    return List.of("Youtube video", "Youtube shorts");
+    return List.of("Instagram video");
+  }
+
+  private List<String> buildMetadataCommand(String url) {
+    List<String> command = new ArrayList<>();
+    command.add("yt-dlp");
+    command.add("--no-playlist");
+    String userAgent = downloadConfiguration.getYtDlpUserAgent();
+    if (userAgent != null && !userAgent.isBlank()) {
+      command.add("--user-agent");
+      command.add(userAgent);
+    }
+    command.add("-j");
+    command.add(url);
+    return command;
+  }
+
+  private List<String> buildDownloadCommand(String url, String outputTemplate, String format) {
+    List<String> command = new ArrayList<>();
+    command.add("yt-dlp");
+    command.add("--no-playlist");
+    String userAgent = downloadConfiguration.getYtDlpUserAgent();
+    if (userAgent != null && !userAgent.isBlank()) {
+      command.add("--user-agent");
+      command.add(userAgent);
+    }
+    command.add("--merge-output-format");
+    command.add("mp4");
+    command.add("-f");
+    command.add(format);
+    command.add("-o");
+    command.add(outputTemplate);
+    command.add(url);
+    return command;
+  }
+
+  private boolean isCompatibleVideoCodec(String codec) {
+    return codec.startsWith("avc1") || codec.startsWith("h264") || codec.startsWith("h265");
+  }
+
+  private boolean isCompatibleAudioCodec(String codec) {
+    return codec.startsWith("mp4a") || codec.startsWith("aac");
   }
 
   @Data
