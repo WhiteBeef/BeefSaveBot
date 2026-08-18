@@ -101,6 +101,8 @@ public class YandexMusicDownloadService implements DownloadService {
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200) {
+        log.warn("Не удалось получить метаданные трека {} для имени файла: HTTP {} {}",
+            trackId, response.statusCode(), response.body());
         return fallback;
       }
       JsonNode results = mapper.readTree(response.body()).path("result");
@@ -112,6 +114,7 @@ public class YandexMusicDownloadService implements DownloadService {
           .reduce((a, b) -> a + ", " + b)
           .orElse(null);
       if (title == null || title.isBlank()) {
+        log.warn("В ответе метаданных трека {} нет title: {}", trackId, response.body());
         return fallback;
       }
       String name = artists == null || artists.isBlank() ? title : artists + " - " + title;
