@@ -9,6 +9,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.StreamSupport;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -52,7 +54,13 @@ public class YandexMusicDownloadService implements DownloadService {
           "Скачивание Яндекс Музыки не настроено: не задан download.yandex-music.token");
     }
 
-    File file = new File("audio_" + UUID.randomUUID() + ".mp3");
+    Path tempDir;
+    try {
+      tempDir = Files.createTempDirectory("yandex_track_");
+    } catch (IOException e) {
+      throw new RuntimeException("Не удалось создать временную директорию для трека", e);
+    }
+    File file = new File(tempDir.toFile(), buildFileName(trackId, token) + ".mp3");
     try {
       log.info("Запрос на скачивание трека Яндекс Музыки {}", trackId);
 
@@ -74,12 +82,53 @@ public class YandexMusicDownloadService implements DownloadService {
     } catch (Exception e) {
       try {
         Files.deleteIfExists(file.toPath());
+        Files.deleteIfExists(tempDir);
       } catch (IOException ignored) {
         // best-effort cleanup
       }
       log.error("Ошибка при загрузке трека Яндекс Музыки {}: {}", url, e.getMessage());
       throw new RuntimeException(e);
     }
+  }
+
+  private String buildFileName(String trackId, String token) {
+    String fallback = "audio_" + UUID.randomUUID();
+    try {
+      HttpRequest request = HttpRequest.newBuilder(
+              URI.create("https://api.music.yandex.net/tracks/" + trackId))
+          .header("Authorization", "OAuth " + token)
+          .GET()
+          .build();
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200) {
+        return fallback;
+      }
+      JsonNode results = mapper.readTree(response.body()).path("result");
+      JsonNode track = results.isArray() && !results.isEmpty() ? results.get(0) : results;
+      String title = track.path("title").asText(null);
+      String artists = StreamSupport.stream(track.path("artists").spliterator(), false)
+          .map(artist -> artist.path("name").asText(""))
+          .filter(name -> !name.isBlank())
+          .reduce((a, b) -> a + ", " + b)
+          .orElse(null);
+      if (title == null || title.isBlank()) {
+        return fallback;
+      }
+      String name = artists == null || artists.isBlank() ? title : artists + " - " + title;
+      String sanitized = sanitizeFileName(name);
+      return sanitized.isBlank() ? fallback : sanitized;
+    } catch (Exception e) {
+      log.warn("Не удалось получить название трека {} для имени файла: {}", trackId, e.getMessage());
+      return fallback;
+    }
+  }
+
+  private String sanitizeFileName(String name) {
+    String sanitized = name.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "").trim();
+    if (sanitized.length() > 150) {
+      sanitized = sanitized.substring(0, 150).trim();
+    }
+    return sanitized;
   }
 
   private JsonNode findBestDownloadInfo(String trackId, String token) throws IOException, InterruptedException {

@@ -129,6 +129,10 @@ public class TelegramBotService extends TelegramLongPollingBot {
       try {
         if (file != null) {
           Files.deleteIfExists(file.toPath());
+          File parent = file.getParentFile();
+          if (parent != null) {
+            Files.deleteIfExists(parent.toPath());
+          }
         }
       } catch (IOException e) {
         log.error("Ошибка при удалении временного файла");
