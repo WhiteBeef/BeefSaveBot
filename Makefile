@@ -28,7 +28,7 @@ docker-build:
 
 # Поднять/пересоздать контейнер на актуальном образе
 up:
-	docker compose up -d
+	docker compose up -d --remove-orphans
 
 down:
 	docker compose down
