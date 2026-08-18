@@ -60,6 +60,7 @@ public class InstagramDownloadService implements DownloadService {
         throw new RuntimeException("Нет массива formats в JSON");
       }
       log.info("Найдено форматов: {}", formats.size());
+      double duration = root.path("duration").asDouble(-1);
       List<Candidate> candidates = new ArrayList<>();
       List<JsonNode> videos = new ArrayList<>(), audios = new ArrayList<>(), muxeds = new ArrayList<>();
 
@@ -68,14 +69,8 @@ public class InstagramDownloadService implements DownloadService {
         if (id == null) {
           continue;
         }
-        long size = format.has("filesize") ? format.get("filesize").asLong(-1)
-            : format.has("filesize_approx") ? format.get("filesize_approx").asLong(-1)
-                : -1;
-        if (size < 0) {
-          continue;
-        }
-        String audioCodec = format.path("acodec").asText("none");
-        String videoCodec = format.path("vcodec").asText("none");
+        String audioCodec = codecOf(format, "acodec");
+        String videoCodec = codecOf(format, "vcodec");
         boolean hasVideo = !"none".equals(videoCodec);
         boolean hasAudio = !"none".equals(audioCodec);
         if (hasVideo && hasAudio) {
@@ -102,41 +97,39 @@ public class InstagramDownloadService implements DownloadService {
           muxeds.size(), videos.size(), audios.size());
 
       List<JsonNode> compatibleMuxeds = muxeds.stream()
-          .filter(m -> isCompatibleVideoCodec(m.path("vcodec").asText()))
-          .filter(m -> isCompatibleAudioCodec(m.path("acodec").asText())).toList();
+          .filter(m -> isCompatibleVideoCodec(codecOf(m, "vcodec")))
+          .filter(m -> isCompatibleAudioCodec(codecOf(m, "acodec"))).toList();
 
-      List<JsonNode> h264Videos = videos.stream()
-          .filter(v -> isCompatibleVideoCodec(v.path("vcodec").asText())).toList();
+      List<JsonNode> compatibleVideos = videos.stream()
+          .filter(v -> isCompatibleVideoCodec(codecOf(v, "vcodec"))).toList();
 
-      List<JsonNode> aacAudios = audios.stream()
-          .filter(a -> isCompatibleAudioCodec(a.path("acodec").asText())).toList();
+      List<JsonNode> compatibleAudios = audios.stream()
+          .filter(a -> isCompatibleAudioCodec(codecOf(a, "acodec"))).toList();
       log.info("Совместимые кодеки: muxed={}, video={}, audio={}",
-          compatibleMuxeds.size(), h264Videos.size(), aacAudios.size());
+          compatibleMuxeds.size(), compatibleVideos.size(), compatibleAudios.size());
 
       for (JsonNode muxed : compatibleMuxeds) {
         int muxedHeight = muxed.path("height").asInt(0);
-        long muxedSize = muxed.has("filesize") ? muxed.get("filesize").asLong()
-            : muxed.get("filesize_approx").asLong();
+        long muxedSize = estimateSize(muxed, duration);
         if (muxedHeight <= downloadConfiguration.getMaxHeight()
-            && muxedSize <= downloadConfiguration.getMaxBytes()) {
+            && (muxedSize < 0 || muxedSize <= downloadConfiguration.getMaxBytes())) {
           candidates.add(new Candidate(muxed.path("format_id").asText(), muxedHeight));
         }
       }
 
       if (candidates.isEmpty()) {
-        for (JsonNode video : h264Videos) {
+        for (JsonNode video : compatibleVideos) {
           int videoHeight = video.path("height").asInt(0);
           if (videoHeight > downloadConfiguration.getMaxHeight()) {
             continue;
           }
           String vid = video.path("format_id").asText();
-          long videoSize = video.has("filesize") ? video.get("filesize").asLong()
-              : video.get("filesize_approx").asLong();
-          for (JsonNode audio : aacAudios) {
+          long videoSize = estimateSize(video, duration);
+          for (JsonNode audio : compatibleAudios) {
             String aid = audio.path("format_id").asText();
-            long audioSize = audio.has("filesize") ? audio.get("filesize").asLong()
-                : audio.get("filesize_approx").asLong();
-            if (videoSize + audioSize <= downloadConfiguration.getMaxBytes()) {
+            long audioSize = estimateSize(audio, duration);
+            long combinedSize = videoSize < 0 || audioSize < 0 ? -1 : videoSize + audioSize;
+            if (combinedSize < 0 || combinedSize <= downloadConfiguration.getMaxBytes()) {
               candidates.add(new Candidate(vid + "+" + aid, videoHeight));
             }
           }
@@ -233,11 +226,31 @@ public class InstagramDownloadService implements DownloadService {
   }
 
   private boolean isCompatibleVideoCodec(String codec) {
-    return codec.startsWith("avc1") || codec.startsWith("h264") || codec.startsWith("h265");
+    return codec.startsWith("avc1") || codec.startsWith("h264") || codec.startsWith("h265")
+        || codec.startsWith("vp9") || codec.startsWith("vp09") || codec.startsWith("av01");
   }
 
   private boolean isCompatibleAudioCodec(String codec) {
-    return codec.startsWith("mp4a") || codec.startsWith("aac");
+    return codec.startsWith("mp4a") || codec.startsWith("aac") || codec.startsWith("opus");
+  }
+
+  private String codecOf(JsonNode format, String field) {
+    JsonNode value = format.path(field);
+    return value.isMissingNode() || value.isNull() ? "none" : value.asText("none");
+  }
+
+  private long estimateSize(JsonNode format, double durationSeconds) {
+    if (format.has("filesize") && !format.path("filesize").isNull()) {
+      return format.path("filesize").asLong(-1);
+    }
+    if (format.has("filesize_approx") && !format.path("filesize_approx").isNull()) {
+      return format.path("filesize_approx").asLong(-1);
+    }
+    double tbr = format.path("tbr").asDouble(-1);
+    if (tbr > 0 && durationSeconds > 0) {
+      return (long) (tbr * 125 * durationSeconds);
+    }
+    return -1;
   }
 
   @Data

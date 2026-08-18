@@ -26,7 +26,7 @@ services:
       DOWNLOAD_YT_DLP_COOKIES_FILE: ${DOWNLOAD_YT_DLP_COOKIES_FILE:-}
     volumes:
       - ./downloads:/app/downloads
-      - ./cookies:/app/cookies:ro
+      - ./cookies:/app/cookies
     restart: always
 volumes:
   pgdata:
