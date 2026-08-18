@@ -23,8 +23,10 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
       YANDEX_MUSIC_TOKEN: ${YANDEX_MUSIC_TOKEN}
+      DOWNLOAD_YT_DLP_COOKIES_FILE: ${DOWNLOAD_YT_DLP_COOKIES_FILE:-}
     volumes:
       - ./downloads:/app/downloads
+      - ./cookies:/app/cookies:ro
     restart: always
 volumes:
   pgdata:
