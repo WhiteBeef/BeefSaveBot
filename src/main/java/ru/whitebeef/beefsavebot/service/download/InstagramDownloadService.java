@@ -35,10 +35,23 @@ public class InstagramDownloadService implements DownloadService {
       ProcessBuilder metadataProcessBuilder = new ProcessBuilder(buildMetadataCommand(url));
       log.debug("Команда получения метаданных: {}", String.join(" ", metadataProcessBuilder.command()));
       Process metadataProcess = metadataProcessBuilder.start();
+      String[] stderrHolder = new String[1];
+      Thread stderrReader = new Thread(() -> {
+        try {
+          stderrHolder[0] = new String(metadataProcess.getErrorStream().readAllBytes(),
+              StandardCharsets.UTF_8);
+        } catch (IOException ignored) {
+          // best-effort diagnostics
+        }
+      });
+      stderrReader.start();
       String metadataJson = new String(metadataProcess.getInputStream().readAllBytes(),
           StandardCharsets.UTF_8);
-      if (metadataProcess.waitFor() != 0) {
-        throw new RuntimeException("Не удалось получить метаданные");
+      int exitCode = metadataProcess.waitFor();
+      stderrReader.join();
+      if (exitCode != 0) {
+        log.error("yt-dlp не смог получить метаданные {}: {}", url, stderrHolder[0]);
+        throw new RuntimeException("Не удалось получить метаданные: " + stderrHolder[0]);
       }
       log.info("Метаданные получены");
       JsonNode root = mapper.readTree(metadataJson);
@@ -185,6 +198,11 @@ public class InstagramDownloadService implements DownloadService {
       command.add("--user-agent");
       command.add(userAgent);
     }
+    String cookiesFile = downloadConfiguration.getYtDlpCookiesFile();
+    if (cookiesFile != null && !cookiesFile.isBlank()) {
+      command.add("--cookies");
+      command.add(cookiesFile);
+    }
     command.add("-j");
     command.add(url);
     return command;
@@ -198,6 +216,11 @@ public class InstagramDownloadService implements DownloadService {
     if (userAgent != null && !userAgent.isBlank()) {
       command.add("--user-agent");
       command.add(userAgent);
+    }
+    String cookiesFile = downloadConfiguration.getYtDlpCookiesFile();
+    if (cookiesFile != null && !cookiesFile.isBlank()) {
+      command.add("--cookies");
+      command.add(cookiesFile);
     }
     command.add("--merge-output-format");
     command.add("mp4");

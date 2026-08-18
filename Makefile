@@ -1,5 +1,4 @@
-.PHONY: build docker-build run rebuild rebuild_dev clean dev update-jar jdk-install docker-install start
-
+.PHONY: build docker-build up down logs deploy dev clean jdk-install docker-install start
 
 SEP = \ /
 
@@ -17,37 +16,36 @@ endif
 
 MVN_CMD = .$(FILE_SEPARATOR)mvnw
 
+# Собрать jar (application/libs слои для Dockerfile)
 build:
 	$(MVN_CMD) clean package -DskipTests
 
+# Пересобрать docker-образ, который реально использует docker-compose
+# (без --pull, чтобы каждый раз не тянуть заново базовый образ; кэш слоёв
+# всё равно инвалидируется, когда меняется jar или сам Dockerfile)
 docker-build:
-	docker build -t telegram-bot:latest .
+	docker-compose build telegram-bot
 
-run:
+# Поднять/пересоздать контейнер на актуальном образе
+up:
 	docker-compose up -d
 
+down:
+	docker-compose down
+
+logs:
+	docker-compose logs -f telegram-bot
+
+# Единая команда: собрать jar -> пересобрать образ (jar + либы, напр. yt-dlp) -> перезапустить контейнер
+deploy: build docker-build up
+
 dev:
-	docker-compose -f docker-compose.dev.yml up -d
-
-rebuild: build docker-build run
-
-rebuild_dev: build docker-build dev
+	docker-compose -f docker-compose.dev.yml up -d --build
 
 clean:
-	$MVN_CMD clean
+	$(MVN_CMD) clean
 	docker-compose down -v --rmi local
 	-$(RMDIR) target
-
-update-jar: build
-	@echo "Extracting JAR layers..."
-	-$(RMDIR) target$(FILE_SEPARATOR)extracted
-	$(MKDIR) target$(FILE_SEPARATOR)extracted
-	java -Djarmode=layertools -jar target$(FILE_SEPARATOR)BeefSaveBot-0.0.1-SNAPSHOT.jar extract --destination target$(FILE_SEPARATOR)extracted
-	@echo "Copying application layer to container..."
-	docker cp target/extracted/application/. $(shell docker-compose ps -q telegram-bot):/app/
-	@echo "Restarting docker-compose..."
-	docker-compose restart
-	-$(RMDIR) target$(FILE_SEPARATOR)extracted
 
 jdk-install:
 	@echo "Installing OpenJDK 21 (Ubuntu/Debian only)..."
@@ -57,4 +55,4 @@ docker-install:
 	@echo "Installing Docker (Ubuntu/Debian only)..."
 	sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-compose
 
-start: jdk-install build docker-install docker-build run
+start: jdk-install docker-install deploy

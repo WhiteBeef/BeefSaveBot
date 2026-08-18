@@ -15,6 +15,9 @@ COPY --from=builder /app/spring-boot-loader/ ./
 COPY --from=builder /app/snapshot-dependencies/ ./
 COPY --from=builder /app/application/ ./
 
-RUN apk add --no-cache ffmpeg yt-dlp
+RUN apk add --no-cache ffmpeg python3 py3-pip && \
+    python3 -m venv /opt/ytdlp-venv && \
+    /opt/ytdlp-venv/bin/pip install --no-cache-dir -U yt-dlp && \
+    ln -s /opt/ytdlp-venv/bin/yt-dlp /usr/local/bin/yt-dlp
 
 ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]

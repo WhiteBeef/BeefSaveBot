@@ -20,6 +20,9 @@ public class DownloadConfiguration {
   @Value("${download.yt-dlp.user-agent:}")
   private String ytDlpUserAgent;
 
+  @Value("${download.yt-dlp.cookies-file:}")
+  private String ytDlpCookiesFile;
+
   @Value("${download.yandex-music.token:}")
   private String yandexMusicToken;
 }
