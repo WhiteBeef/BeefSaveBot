@@ -11,4 +11,8 @@ public interface DownloadService {
 
   List<String> getSupportedSites();
 
+  default MediaType getMediaType() {
+    return MediaType.VIDEO;
+  }
+
 }

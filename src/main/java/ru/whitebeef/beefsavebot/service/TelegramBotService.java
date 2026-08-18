@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
+import org.telegram.telegrambots.meta.api.methods.send.SendAudio;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendVideo;
 import org.telegram.telegrambots.meta.api.objects.Update;
@@ -22,6 +23,7 @@ import ru.whitebeef.beefsavebot.configuration.BotConfiguration;
 import ru.whitebeef.beefsavebot.dto.RequestDto;
 import ru.whitebeef.beefsavebot.dto.UserInfoDto;
 import ru.whitebeef.beefsavebot.entity.RequestLog;
+import ru.whitebeef.beefsavebot.service.download.MediaType;
 import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 
 @Slf4j
@@ -81,9 +83,11 @@ public class TelegramBotService extends TelegramLongPollingBot {
         return;
       }
 
+      MediaType mediaType = videoDownloadService.getMediaType(url);
       execute(SendMessage.builder()
           .chatId(chatId.toString())
-          .text("Ваше видео выгружается.. Ожидайте!")
+          .text(mediaType == MediaType.AUDIO ? "Ваш трек выгружается.. Ожидайте!"
+              : "Ваше видео выгружается.. Ожидайте!")
           .build());
       file = videoDownloadService.downloadVideo(url);
       long size = Files.size(file.toPath());
@@ -91,14 +95,23 @@ public class TelegramBotService extends TelegramLongPollingBot {
       if (size > 50L * 1024 * 1024) {
         execute(SendMessage.builder()
             .chatId(chatId.toString())
-            .text("К сожалению видео слишком длинное :(\nМаксимальный размер - 50Мб!")
+            .text(mediaType == MediaType.AUDIO
+                ? "К сожалению трек слишком большой :(\nМаксимальный размер - 50Мб!"
+                : "К сожалению видео слишком длинное :(\nМаксимальный размер - 50Мб!")
             .build());
         return;
       }
-      execute(SendVideo.builder()
-          .chatId(chatId.toString())
-          .video(new org.telegram.telegrambots.meta.api.objects.InputFile(file))
-          .build());
+      if (mediaType == MediaType.AUDIO) {
+        execute(SendAudio.builder()
+            .chatId(chatId.toString())
+            .audio(new org.telegram.telegrambots.meta.api.objects.InputFile(file))
+            .build());
+      } else {
+        execute(SendVideo.builder()
+            .chatId(chatId.toString())
+            .video(new org.telegram.telegrambots.meta.api.objects.InputFile(file))
+            .build());
+      }
       requestLog.setDownloaded(true);
       requestService.save(requestLog);
     } catch (Exception e) {

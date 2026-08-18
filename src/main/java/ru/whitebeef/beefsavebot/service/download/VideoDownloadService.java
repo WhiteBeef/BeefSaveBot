@@ -27,6 +27,14 @@ public class VideoDownloadService {
         .anyMatch(downloadService -> downloadService.canDownloadVideo(url));
   }
 
+  public MediaType getMediaType(String url) {
+    return youtubeDownloadServices.stream()
+        .filter(downloadService -> downloadService.canDownloadVideo(url))
+        .findFirst()
+        .map(DownloadService::getMediaType)
+        .orElse(MediaType.VIDEO);
+  }
+
   public String getSupportedSites() {
     AtomicInteger counter = new AtomicInteger(1);
     return youtubeDownloadServices.stream()
