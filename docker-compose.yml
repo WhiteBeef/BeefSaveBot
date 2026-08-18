@@ -22,6 +22,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: postgres
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
+      YANDEX_MUSIC_TOKEN: ${YANDEX_MUSIC_TOKEN}
     volumes:
       - ./downloads:/app/downloads
     restart: always

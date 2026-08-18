@@ -26,6 +26,8 @@ download:
   max-resolution: ${DOWNLOAD_MAX_RESOLUTION:1080}
   yt-dlp:
     user-agent: ${DOWNLOAD_YT_DLP_USER_AGENT:}
+  yandex-music:
+    token: ${YANDEX_MUSIC_TOKEN:}
 
 logging:
   level:
