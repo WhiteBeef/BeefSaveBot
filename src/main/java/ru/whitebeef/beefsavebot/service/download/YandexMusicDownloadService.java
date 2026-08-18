@@ -2,6 +2,9 @@ package ru.whitebeef.beefsavebot.service.download;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mpatric.mp3agic.ID3v2;
+import com.mpatric.mp3agic.ID3v24Tag;
+import com.mpatric.mp3agic.Mp3File;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -60,7 +63,9 @@ public class YandexMusicDownloadService implements DownloadService {
     } catch (IOException e) {
       throw new RuntimeException("Не удалось создать временную директорию для трека", e);
     }
-    File file = new File(tempDir.toFile(), buildFileName(trackId, token) + ".mp3");
+    TrackMeta meta = fetchTrackMeta(trackId, token);
+    String fileName = meta == null ? "audio_" + UUID.randomUUID() : meta.fileNameBase();
+    File file = new File(tempDir.toFile(), fileName + ".mp3");
     try {
       log.info("Запрос на скачивание трека Яндекс Музыки {}", trackId);
 
@@ -78,6 +83,9 @@ public class YandexMusicDownloadService implements DownloadService {
         Files.deleteIfExists(file.toPath());
         throw new RuntimeException("Трек превышает максимально допустимый размер или пуст");
       }
+      if (meta != null) {
+        writeId3Tags(file, meta);
+      }
       return file;
     } catch (Exception e) {
       try {
@@ -91,8 +99,22 @@ public class YandexMusicDownloadService implements DownloadService {
     }
   }
 
-  private String buildFileName(String trackId, String token) {
-    String fallback = "audio_" + UUID.randomUUID();
+  private record TrackMeta(String artist, String title) {
+    String fileNameBase() {
+      String name = artist == null || artist.isBlank() ? title : artist + " - " + title;
+      return sanitizeFileName(name);
+    }
+
+    private static String sanitizeFileName(String name) {
+      String sanitized = name.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "").trim();
+      if (sanitized.length() > 150) {
+        sanitized = sanitized.substring(0, 150).trim();
+      }
+      return sanitized.isBlank() ? "audio_" + UUID.randomUUID() : sanitized;
+    }
+  }
+
+  private TrackMeta fetchTrackMeta(String trackId, String token) {
     try {
       HttpRequest request = HttpRequest.newBuilder(
               URI.create("https://api.music.yandex.net/tracks/" + trackId))
@@ -101,9 +123,9 @@ public class YandexMusicDownloadService implements DownloadService {
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200) {
-        log.warn("Не удалось получить метаданные трека {} для имени файла: HTTP {} {}",
+        log.warn("Не удалось получить метаданные трека {}: HTTP {} {}",
             trackId, response.statusCode(), response.body());
-        return fallback;
+        return null;
       }
       JsonNode results = mapper.readTree(response.body()).path("result");
       JsonNode track = results.isArray() && !results.isEmpty() ? results.get(0) : results;
@@ -115,23 +137,32 @@ public class YandexMusicDownloadService implements DownloadService {
           .orElse(null);
       if (title == null || title.isBlank()) {
         log.warn("В ответе метаданных трека {} нет title: {}", trackId, response.body());
-        return fallback;
+        return null;
       }
-      String name = artists == null || artists.isBlank() ? title : artists + " - " + title;
-      String sanitized = sanitizeFileName(name);
-      return sanitized.isBlank() ? fallback : sanitized;
+      return new TrackMeta(artists, title);
     } catch (Exception e) {
-      log.warn("Не удалось получить название трека {} для имени файла: {}", trackId, e.getMessage());
-      return fallback;
+      log.warn("Не удалось получить метаданные трека {}: {}", trackId, e.getMessage());
+      return null;
     }
   }
 
-  private String sanitizeFileName(String name) {
-    String sanitized = name.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "").trim();
-    if (sanitized.length() > 150) {
-      sanitized = sanitized.substring(0, 150).trim();
+  private void writeId3Tags(File file, TrackMeta meta) {
+    try {
+      Mp3File mp3File = new Mp3File(file);
+      ID3v2 tag = new ID3v24Tag();
+      tag.setTitle(meta.title());
+      if (meta.artist() != null && !meta.artist().isBlank()) {
+        tag.setArtist(meta.artist());
+      }
+      mp3File.setId3v2Tag(tag);
+      File tagged = new File(file.getParentFile(), file.getName() + ".tagged");
+      mp3File.save(tagged.getAbsolutePath());
+      Files.move(tagged.toPath(), file.toPath(),
+          java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+    } catch (Exception e) {
+      log.warn("Не удалось записать ID3-теги трека {} - {}: {}", meta.artist(), meta.title(),
+          e.getMessage());
     }
-    return sanitized;
   }
 
   private JsonNode findBestDownloadInfo(String trackId, String token) throws IOException, InterruptedException {
