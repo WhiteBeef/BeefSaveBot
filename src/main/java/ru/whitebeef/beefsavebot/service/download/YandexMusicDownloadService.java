@@ -8,13 +8,16 @@ import com.mpatric.mp3agic.Mp3File;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
@@ -50,7 +53,64 @@ public class YandexMusicDownloadService implements DownloadService {
     if (!matcher.matches()) {
       throw new RuntimeException("Не удалось разобрать ссылку на трек Яндекс Музыки");
     }
-    String trackId = matcher.group(1);
+    return downloadTrackById(matcher.group(1));
+  }
+
+  public record TrackSearchResult(String trackId, String artist, String title) {
+    public String display() {
+      return artist == null || artist.isBlank() ? title : artist + " - " + title;
+    }
+  }
+
+  public List<TrackSearchResult> search(String query) {
+    String token = downloadConfiguration.getYandexMusicToken();
+    if (token == null || token.isBlank()) {
+      log.warn("Поиск по Яндекс Музыке недоступен: не задан download.yandex-music.token");
+      return List.of();
+    }
+    try {
+      String encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8);
+      HttpRequest request = HttpRequest.newBuilder(
+              URI.create("https://api.music.yandex.net/search?type=track&page=0&text=" + encodedQuery))
+          .header("Authorization", "OAuth " + token)
+          .GET()
+          .build();
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200) {
+        log.warn("Не удалось выполнить поиск '{}': HTTP {} {}", query, response.statusCode(),
+            response.body());
+        return List.of();
+      }
+      JsonNode results = mapper.readTree(response.body())
+          .path("result").path("tracks").path("results");
+      if (!results.isArray()) {
+        return List.of();
+      }
+      List<TrackSearchResult> found = new ArrayList<>();
+      for (JsonNode track : results) {
+        String trackId = track.path("id").asText(null);
+        String title = track.path("title").asText(null);
+        if (trackId == null || title == null || title.isBlank()) {
+          continue;
+        }
+        String artists = StreamSupport.stream(track.path("artists").spliterator(), false)
+            .map(artist -> artist.path("name").asText(""))
+            .filter(name -> !name.isBlank())
+            .reduce((a, b) -> a + ", " + b)
+            .orElse(null);
+        found.add(new TrackSearchResult(trackId, artists, title));
+        if (found.size() == 3) {
+          break;
+        }
+      }
+      return found;
+    } catch (Exception e) {
+      log.warn("Ошибка поиска трека '{}': {}", query, e.getMessage());
+      return List.of();
+    }
+  }
+
+  public File downloadTrackById(String trackId) {
     String token = downloadConfiguration.getYandexMusicToken();
     if (token == null || token.isBlank()) {
       throw new RuntimeException(
@@ -94,7 +154,7 @@ public class YandexMusicDownloadService implements DownloadService {
       } catch (IOException ignored) {
         // best-effort cleanup
       }
-      log.error("Ошибка при загрузке трека Яндекс Музыки {}: {}", url, e.getMessage());
+      log.error("Ошибка при загрузке трека Яндекс Музыки {}: {}", trackId, e.getMessage());
       throw new RuntimeException(e);
     }
   }
