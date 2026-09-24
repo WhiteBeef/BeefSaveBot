@@ -10,6 +10,7 @@ public enum RequestType {
   CROP("Обрезка"),
   SEARCH("Поиск"),
   TRACK("Трек из поиска"),
+  CONVERT("Конвертация"),
   COMMAND("Команда");
 
   private final String title;
