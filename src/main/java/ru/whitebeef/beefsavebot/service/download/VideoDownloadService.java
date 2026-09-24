@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import ru.whitebeef.beefsavebot.dto.DownloadOptions;
 
 @Service
 @RequiredArgsConstructor
@@ -13,11 +14,11 @@ public class VideoDownloadService {
 
   private final List<DownloadService> youtubeDownloadServices;
 
-  public File downloadVideo(String url) {
+  public File downloadVideo(String url, DownloadOptions options) {
     return youtubeDownloadServices.stream()
         .filter(downloadService -> downloadService.canDownloadVideo(url))
         .findFirst()
-        .map(downloadService -> downloadService.downloadVideo(url))
+        .map(downloadService -> downloadService.downloadVideo(url, options))
         .orElseThrow(() -> new RuntimeException(
             "Не могу обработать видео по ссылке " + url + " (обработчик не найден)"));
   }

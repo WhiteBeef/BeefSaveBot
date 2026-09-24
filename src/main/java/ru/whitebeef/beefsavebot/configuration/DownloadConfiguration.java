@@ -11,6 +11,16 @@ public class DownloadConfiguration {
   @Value("${download.max-bytes:52428800}")
   private long maxBytes;
 
+  /**
+   * Максимальный размер исходника, который можно скачать для обрезки или конвертации
+   * (итоговый файл всё равно должен уложиться в max-bytes).
+   */
+  @Value("${download.source-max-bytes:524288000}")
+  private long sourceMaxBytes;
+
+  @Value("${download.ffmpeg-timeout-minutes:15}")
+  private long ffmpegTimeoutMinutes;
+
   @Value("${download.max-height:1080}")
   private int maxHeight;
 

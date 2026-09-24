@@ -1,166 +1,47 @@
 package ru.whitebeef.beefsavebot.service.download;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.RequiredArgsConstructor;
+import java.util.List;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
 
-import java.io.File;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
-import java.util.function.Predicate;
-import java.util.regex.Pattern;
-
 @Service
 @Slf4j
-@RequiredArgsConstructor
-public class TiktokDownloadService implements DownloadService {
+public class TiktokDownloadService extends AbstractYtDlpDownloadService {
 
-    private final DownloadConfiguration downloadConfiguration;
     private static final Predicate<String> PATTERN_PREDICATE = Pattern.compile(
                     "^https:\\/\\/(www\\.)?(vm\\.|vt\\.)?tiktok\\.com\\/.+$")
             .asMatchPredicate();
 
-    public File downloadVideo(String url) {
-        try {
-            ObjectMapper mapper = new ObjectMapper();
+    public TiktokDownloadService(DownloadConfiguration downloadConfiguration,
+            YtDlpClient ytDlpClient) {
+        super(downloadConfiguration, ytDlpClient);
+    }
 
-            log.info("Запрос на получение метаданных");
-            ProcessBuilder metadataProcessBuilder = new ProcessBuilder("yt-dlp",
-                    "--no-playlist",
-                    "-j", url);
-            Process metadataProcess = metadataProcessBuilder.start();
-            String metadataJson = new String(metadataProcess.getInputStream().readAllBytes(),
-                    StandardCharsets.UTF_8);
-            if (metadataProcess.waitFor() != 0) {
-                throw new RuntimeException("Не удалось получить метаданные");
-            }
-            log.info("Метаданные получены");
-            JsonNode root = mapper.readTree(metadataJson);
-            JsonNode formats = root.path("formats");
-            if (!formats.isArray()) {
-                throw new RuntimeException("Нет массива formats в JSON");
-            }
+    @Override
+    protected boolean isCompatibleVideoCodec(String codec) {
+        return codec.startsWith("h265") || codec.startsWith("h264");
+    }
 
-            List<Candidate> candidates = new ArrayList<>();
-            List<JsonNode> videos = new ArrayList<>(), audios = new ArrayList<>(), muxeds = new ArrayList<>();
+    @Override
+    protected boolean isCompatibleAudioCodec(String codec) {
+        return codec.startsWith("aac");
+    }
 
-            for (JsonNode format : formats) {
-                String id = format.path("format_id").asText(null);
-                if (id == null) {
-                    continue;
-                }
-                long size = format.has("filesize") ? format.get("filesize").asLong(-1)
-                        : format.has("filesize_approx") ? format.get("filesize_approx").asLong(-1)
-                        : -1;
-                if (size < 0) {
-                    continue;
-                }
-                String audioCodec = format.path("acodec").asText("none");
-                String videoCodec = format.path("vcodec").asText("none");
-                boolean hasVideo = !"none".equals(videoCodec);
-                boolean hasAudio = !"none".equals(audioCodec);
-                if (hasVideo && hasAudio) {
-                    muxeds.add(format);
-                } else if (hasVideo) {
-                    videos.add(format);
-                } else if (hasAudio) {
-                    audios.add(format);
-                }
-            }
+    /**
+     * Вертикальные видео ограничиваем по меньшей стороне.
+     */
+    @Override
+    protected int dimensionOf(JsonNode format) {
+        return Math.min(format.path("width").asInt(0), format.path("height").asInt(0));
+    }
 
-            List<JsonNode> compatibleMuxeds = muxeds.stream()
-                    .filter(m -> m.path("vcodec").asText().startsWith("h265") || m.path("vcodec").asText().startsWith("h264")) // H.264
-                    .filter(m -> m.path("acodec").asText().startsWith("aac")).toList();
-
-            List<JsonNode> h264Videos = videos.stream()
-                    .filter(v -> v.path("vcodec").asText().startsWith("h265") || v.path("vcodec").asText().startsWith("h264")).toList();
-
-            List<JsonNode> aacAudios = audios.stream()
-                    .filter(a -> a.path("acodec").asText().startsWith("aac")).toList();
-
-            for (JsonNode muxed : compatibleMuxeds) {
-                int muxedHeight = muxed.path("height").asInt(0);
-                int muxedWidth = muxed.path("width").asInt(0);
-                int minDim = Math.min(muxedWidth, muxedHeight);
-                long muxedSize = muxed.has("filesize") ? muxed.get("filesize").asLong()
-                        : muxed.get("filesize_approx").asLong();
-                if (minDim <= downloadConfiguration.getMaxResolution()
-                    && muxedSize <= downloadConfiguration.getMaxBytes()) {
-                    candidates.add(new Candidate(muxed.path("format_id").asText(), minDim));
-                }
-            }
-
-            if (candidates.isEmpty()) {
-                for (JsonNode video : h264Videos) {
-                    int videoHeight = video.path("height").asInt(0);
-                    int videoWidth = video.path("width").asInt(0);
-                    int minDim = Math.min(videoWidth, videoHeight);
-                    if (minDim > downloadConfiguration.getMaxResolution()) {
-                        continue;
-                    }
-                    String vid = video.path("format_id").asText();
-                    long videoSize = video.has("filesize") ? video.get("filesize").asLong()
-                            : video.get("filesize_approx").asLong();
-                    for (JsonNode audio : aacAudios) {
-                        String aid = audio.path("format_id").asText();
-                        long audioSize = audio.has("filesize") ? audio.get("filesize").asLong()
-                                : audio.get("filesize_approx").asLong();
-                        if (videoSize + audioSize <= downloadConfiguration.getMaxBytes()) {
-                            candidates.add(new Candidate(vid + "+" + aid, minDim));
-                        }
-                    }
-                }
-            }
-
-            candidates.sort((a, b) -> Integer.compare(b.resolution, a.resolution));
-            if (candidates.isEmpty()) {
-                throw new RuntimeException("Ни один кандидат ≤50MB не найден");
-            }
-            log.info("Кандидаты собраны. Количество: {}", candidates.size());
-            for (Candidate c : candidates) {
-                log.info("Попытка скачать видео с разрешением {}", c.resolution);
-                String base = "video_" + UUID.randomUUID();
-                String outTpl = base + ".%(ext)s";
-
-                ProcessBuilder pbDl = new ProcessBuilder(
-                        "yt-dlp",
-                        "--no-playlist",
-                        "--merge-output-format", "mp4",
-                        "-f", c.combo,
-                        "-o", outTpl,
-                        url
-                );
-                pbDl.inheritIO();
-                Process dl = pbDl.start();
-                if (dl.waitFor() != 0) {
-                    continue;
-                }
-
-                File file = new File(base + ".mp4");
-                if (!file.exists()) {
-                    continue;
-                }
-                long actual = file.length();
-                if (actual <= downloadConfiguration.getMaxBytes()) {
-                    return file;
-                } else {
-                    file.delete();
-                }
-            }
-
-            throw new RuntimeException("Все подходящие кандидаты превысили 50MB после загрузки");
-        } catch (IOException | InterruptedException e) {
-            log.error("Ошибка при загрузке видео с помощью yt-dlp", e);
-            throw new RuntimeException(e);
-        }
+    @Override
+    protected int maxDimension() {
+        return downloadConfiguration.getMaxResolution();
     }
 
     @Override
@@ -171,12 +52,5 @@ public class TiktokDownloadService implements DownloadService {
     @Override
     public List<String> getSupportedSites() {
         return List.of("Tiktok");
-    }
-
-    @Data
-    @AllArgsConstructor
-    private static class Candidate {
-        private String combo;
-        private int resolution;
     }
 }

@@ -2,10 +2,11 @@ package ru.whitebeef.beefsavebot.mappers;
 
 import org.mapstruct.Mapper;
 import org.mapstruct.MappingTarget;
+import org.mapstruct.ReportingPolicy;
 import ru.whitebeef.beefsavebot.dto.UserInfoDto;
 import ru.whitebeef.beefsavebot.entity.UserInfo;
 
-@Mapper(componentModel = "spring")
+@Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
 public interface UserInfoMapper {
 
   UserInfo toEntity(UserInfoDto userInfoDto);
