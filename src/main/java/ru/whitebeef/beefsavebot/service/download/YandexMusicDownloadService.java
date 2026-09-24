@@ -28,6 +28,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
+import ru.whitebeef.beefsavebot.dto.DownloadOptions;
+import ru.whitebeef.beefsavebot.model.Quality;
 
 @Service
 @Slf4j
@@ -48,12 +50,12 @@ public class YandexMusicDownloadService implements DownloadService {
   private final ObjectMapper mapper = new ObjectMapper();
 
   @Override
-  public File downloadVideo(String url) {
+  public File downloadVideo(String url, DownloadOptions options) {
     Matcher matcher = URL_PATTERN.matcher(url.trim());
     if (!matcher.matches()) {
       throw new RuntimeException("Не удалось разобрать ссылку на трек Яндекс Музыки");
     }
-    return downloadTrackById(matcher.group(1));
+    return downloadTrackById(matcher.group(1), options.quality());
   }
 
   public record TrackSearchResult(String trackId, String artist, String title) {
@@ -110,7 +112,7 @@ public class YandexMusicDownloadService implements DownloadService {
     }
   }
 
-  public File downloadTrackById(String trackId) {
+  public File downloadTrackById(String trackId, Quality quality) {
     String token = downloadConfiguration.getYandexMusicToken();
     if (token == null || token.isBlank()) {
       throw new RuntimeException(
@@ -129,7 +131,7 @@ public class YandexMusicDownloadService implements DownloadService {
     try {
       log.info("Запрос на скачивание трека Яндекс Музыки {}", trackId);
 
-      JsonNode downloadInfoEntry = findBestDownloadInfo(trackId, token);
+      JsonNode downloadInfoEntry = findDownloadInfo(trackId, token, quality);
       String downloadInfoUrl = downloadInfoEntry.path("downloadInfoUrl").asText(null);
       if (downloadInfoUrl == null) {
         throw new RuntimeException("Не удалось получить downloadInfoUrl трека");
@@ -225,7 +227,12 @@ public class YandexMusicDownloadService implements DownloadService {
     }
   }
 
-  private JsonNode findBestDownloadInfo(String trackId, String token) throws IOException, InterruptedException {
+  /**
+   * Выбирает mp3 с наибольшим битрейтом, не превышающим битрейт выбранного качества (или самый
+   * лёгкий, если все выше).
+   */
+  private JsonNode findDownloadInfo(String trackId, String token, Quality quality)
+      throws IOException, InterruptedException {
     HttpRequest request = HttpRequest.newBuilder(
             URI.create("https://api.music.yandex.net/tracks/" + trackId + "/download-info"))
         .header("Authorization", "OAuth " + token)
@@ -242,6 +249,7 @@ public class YandexMusicDownloadService implements DownloadService {
     }
 
     JsonNode best = null;
+    JsonNode lightest = null;
     for (JsonNode entry : results) {
       if (entry.path("preview").asBoolean(false)) {
         continue;
@@ -249,10 +257,17 @@ public class YandexMusicDownloadService implements DownloadService {
       if (!"mp3".equals(entry.path("codec").asText())) {
         continue;
       }
-      if (best == null
-          || entry.path("bitrateInKbps").asInt(0) > best.path("bitrateInKbps").asInt(0)) {
+      int bitrate = entry.path("bitrateInKbps").asInt(0);
+      if (lightest == null || bitrate < lightest.path("bitrateInKbps").asInt(0)) {
+        lightest = entry;
+      }
+      if (bitrate <= quality.getAudioKbps()
+          && (best == null || bitrate > best.path("bitrateInKbps").asInt(0))) {
         best = entry;
       }
+    }
+    if (best == null) {
+      best = lightest;
     }
     if (best == null) {
       throw new RuntimeException(
