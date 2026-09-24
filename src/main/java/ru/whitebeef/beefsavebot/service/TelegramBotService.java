@@ -40,12 +40,15 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 import ru.whitebeef.beefsavebot.configuration.BotConfiguration;
 import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
 import ru.whitebeef.beefsavebot.dto.DownloadOptions;
+import ru.whitebeef.beefsavebot.dto.Screen;
 import ru.whitebeef.beefsavebot.dto.UserInfoDto;
 import ru.whitebeef.beefsavebot.entity.RequestLog;
 import ru.whitebeef.beefsavebot.entity.UserInfo;
 import ru.whitebeef.beefsavebot.model.OutputFormat;
 import ru.whitebeef.beefsavebot.model.Quality;
 import ru.whitebeef.beefsavebot.model.RequestType;
+import ru.whitebeef.beefsavebot.service.admin.AdminPanel;
+import ru.whitebeef.beefsavebot.service.admin.AdminService;
 import ru.whitebeef.beefsavebot.service.download.MediaType;
 import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 import ru.whitebeef.beefsavebot.service.download.YandexMusicDownloadService;
@@ -64,7 +67,6 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private static final String TRACK_CALLBACK_PREFIX = "ym_track:";
   private static final String QUALITY_CALLBACK_PREFIX = "set:q:";
   private static final String FORMAT_CALLBACK_PREFIX = "set:f:";
-  private static final String ADMIN_CALLBACK_PREFIX = "adm:";
   private static final int BUTTON_TEXT_LIMIT = 64;
   private static final int MESSAGE_LIMIT = 4000;
   /**
@@ -80,6 +82,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private final RequestService requestService;
   private final UserService userService;
   private final AdminService adminService;
+  private final AdminPanel adminPanel;
   private final ExecutorService executorService = Executors.newFixedThreadPool(10);
 
   @PostConstruct
@@ -111,7 +114,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         adminCommands.addAll(List.of(
             new BotCommand("admin", "Админка"),
             new BotCommand("stats", "Статистика"),
-            new BotCommand("requests", "Последние запросы"),
+            new BotCommand("requests", "Все запросы"),
+            new BotCommand("byusers", "Запросы по пользователям"),
             new BotCommand("find", "Поиск по запросам"),
             new BotCommand("errors", "Последние ошибки"),
             new BotCommand("users", "Пользователи"),
@@ -185,9 +189,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         handleTrackCallback(chatId, userInfo, data.substring(TRACK_CALLBACK_PREFIX.length()));
       } else if (data.startsWith(QUALITY_CALLBACK_PREFIX) || data.startsWith(FORMAT_CALLBACK_PREFIX)) {
         handleSettingsCallback(callbackQuery, userInfo, data);
-      } else if (data.startsWith(ADMIN_CALLBACK_PREFIX) && admin) {
-        answerCallback(callbackQuery, null);
-        handleAdminCommand(chatId, "/" + data.substring(ADMIN_CALLBACK_PREFIX.length()), "");
+      } else if (data.startsWith(AdminPanel.CALLBACK_PREFIX) && admin) {
+        handleAdminCallback(callbackQuery, data.substring(AdminPanel.CALLBACK_PREFIX.length()));
       } else {
         answerCallback(callbackQuery, null);
       }
@@ -506,25 +509,24 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private boolean handleAdminCommand(Long chatId, String command, String args)
       throws TelegramApiException {
     switch (command) {
-      case "/admin" -> sendHtml(chatId, adminService.helpText(), adminKeyboard());
-      case "/stats" -> sendHtml(chatId, adminService.statsText(), adminKeyboard());
-      case "/requests" -> sendHtml(chatId,
-          adminService.recentRequestsText(parseNumber(args, 20, 100)), null);
+      case "/admin" -> sendScreen(chatId, adminService.menu());
+      case "/stats" -> sendScreen(chatId, adminService.stats());
+      case "/requests" -> sendScreen(chatId, adminService.requests(parseNumber(args, 1)));
+      case "/byusers" -> sendScreen(chatId, adminService.groupedByUser(parseNumber(args, 1)));
+      case "/errors" -> sendScreen(chatId, adminService.errors(parseNumber(args, 1)));
+      case "/users" -> sendScreen(chatId, adminService.users(parseNumber(args, 1)));
       case "/find" -> {
         if (args.isBlank()) {
           sendText(chatId, "Использование: /find <текст>");
         } else {
-          sendHtml(chatId, adminService.searchRequestsText(args, 30), null);
+          sendScreen(chatId, adminPanel.search(args));
         }
       }
-      case "/errors" -> sendHtml(chatId, adminService.errorsText(parseNumber(args, 10, 50)), null);
-      case "/users" -> sendHtml(chatId, adminService.usersText(parseNumber(args, 1, 100_000)),
-          null);
       case "/user" -> {
         if (args.isBlank()) {
           sendText(chatId, "Использование: /user <id|@username>");
         } else {
-          sendHtml(chatId, adminService.userText(args, 15), null);
+          sendScreen(chatId, adminService.user(args));
         }
       }
       case "/ban", "/unban" -> handleBan(chatId, args, "/ban".equals(command));
@@ -538,20 +540,49 @@ public class TelegramBotService extends TelegramLongPollingBot {
     return true;
   }
 
-  private InlineKeyboardMarkup adminKeyboard() {
-    return InlineKeyboardMarkup.builder()
-        .keyboard(List.of(
-            List.of(adminButton("📊 Статистика", "stats"), adminButton("🕑 Запросы", "requests")),
-            List.of(adminButton("👥 Пользователи", "users"), adminButton("❌ Ошибки", "errors")),
-            List.of(adminButton("📁 Экспорт CSV", "export"))))
-        .build();
+  /**
+   * Кнопки админки перерисовывают то же сообщение.
+   */
+  private void handleAdminCallback(CallbackQuery callbackQuery, String route)
+      throws TelegramApiException {
+    answerCallback(callbackQuery, null);
+    if (AdminPanel.NOOP_ROUTE.equals(route)) {
+      return;
+    }
+    Long chatId = callbackQuery.getMessage().getChatId();
+    if (AdminPanel.EXPORT_ROUTE.equals(route)) {
+      handleExport(chatId);
+      return;
+    }
+    Screen screen = adminPanel.route(route);
+    if (screen == null) {
+      return;
+    }
+    try {
+      execute(EditMessageText.builder()
+          .chatId(chatId.toString())
+          .messageId(callbackQuery.getMessage().getMessageId())
+          .text(screen.text())
+          .parseMode(ParseMode.HTML)
+          .disableWebPagePreview(true)
+          .replyMarkup(screen.keyboard())
+          .build());
+    } catch (TelegramApiRequestException e) {
+      // «message is not modified» при повторном нажатии той же кнопки — не ошибка
+      if (e.getApiResponse() == null || !e.getApiResponse().contains("not modified")) {
+        throw e;
+      }
+    }
   }
 
-  private InlineKeyboardButton adminButton(String text, String command) {
-    return InlineKeyboardButton.builder()
-        .text(text)
-        .callbackData(ADMIN_CALLBACK_PREFIX + command)
-        .build();
+  private void sendScreen(Long chatId, Screen screen) throws TelegramApiException {
+    execute(SendMessage.builder()
+        .chatId(chatId.toString())
+        .text(screen.text())
+        .parseMode(ParseMode.HTML)
+        .disableWebPagePreview(true)
+        .replyMarkup(screen.keyboard())
+        .build());
   }
 
   private void handleBan(Long chatId, String args, boolean ban) throws TelegramApiException {
@@ -569,8 +600,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
       return;
     }
     userService.setBanned(args, ban);
-    sendText(chatId, (ban ? "🚫 Заблокирован: " : "✅ Разблокирован: ")
-        + target.get().displayName());
+    sendScreen(chatId, adminService.user(String.valueOf(target.get().getTelegramUserId())));
   }
 
   private void handleSendToUser(Long chatId, String args) throws TelegramApiException {
@@ -634,10 +664,9 @@ public class TelegramBotService extends TelegramLongPollingBot {
         .build());
   }
 
-  private int parseNumber(String args, int defaultValue, int max) {
+  private int parseNumber(String args, int defaultValue) {
     try {
-      return args.isBlank() ? defaultValue
-          : Math.max(1, Math.min(max, Integer.parseInt(args.trim())));
+      return args.isBlank() ? defaultValue : Math.max(1, Integer.parseInt(args.trim()));
     } catch (NumberFormatException e) {
       return defaultValue;
     }

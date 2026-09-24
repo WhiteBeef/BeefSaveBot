@@ -69,4 +69,17 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
       + "group by u.id, u.telegramUserId, u.username, u.firstName, u.lastName "
       + "order by count(r) desc")
   List<Object[]> findTopUsers(@Param("since") LocalDateTime since, Pageable pageable);
+
+  /**
+   * Запросы, сгруппированные по пользователям: telegramId, username, firstName, lastName,
+   * всего запросов, успешных, с ошибкой, время последнего запроса.
+   */
+  @Query(value = "select u.telegramUserId, u.username, u.firstName, u.lastName, count(r), "
+      + "sum(case when r.downloaded = true then 1 else 0 end), "
+      + "sum(case when r.errorMessage is not null then 1 else 0 end), max(r.requestedAt) "
+      + "from RequestLog r join r.userInfo u "
+      + "group by u.id, u.telegramUserId, u.username, u.firstName, u.lastName "
+      + "order by count(r) desc, max(r.requestedAt) desc",
+      countQuery = "select count(distinct r.userInfo.id) from RequestLog r")
+  Page<Object[]> findGroupedByUser(Pageable pageable);
 }
