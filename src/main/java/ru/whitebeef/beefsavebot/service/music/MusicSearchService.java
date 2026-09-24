@@ -16,7 +16,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import ru.whitebeef.beefsavebot.model.MusicProvider;
 import ru.whitebeef.beefsavebot.model.Quality;
-import ru.whitebeef.beefsavebot.service.download.DrmProtectedException;
 import ru.whitebeef.beefsavebot.service.media.UserFacingException;
 
 /**
@@ -71,7 +70,7 @@ public class MusicSearchService {
     List<MusicProvider> others = availableProviders().stream()
         .filter(provider -> provider != preferred)
         .toList();
-    return new SearchResults(searchAll(query, others), false, others);
+    return new SearchResults(searchAll(query, others, RESULTS_PER_PROVIDER), false, others);
   }
 
   /**
@@ -82,13 +81,14 @@ public class MusicSearchService {
     if (order.remove(preferred)) {
       order.addFirst(preferred);
     }
-    return searchAll(query, order);
+    return searchAll(query, order, RESULTS_PER_PROVIDER);
   }
 
-  private List<TrackResult> searchAll(String query, List<MusicProvider> order) {
+  private List<TrackResult> searchAll(String query, List<MusicProvider> order, int limit) {
     List<CompletableFuture<List<TrackResult>>> futures = order.stream()
         .map(provider -> CompletableFuture.supplyAsync(
-            () -> providers.get(provider).search(query, RESULTS_PER_PROVIDER), executor))
+            () -> providers.get(provider).search(query, limit).stream().limit(limit).toList(),
+            executor))
         .toList();
     List<TrackResult> results = new ArrayList<>();
     for (int i = 0; i < futures.size(); i++) {
@@ -101,48 +101,23 @@ public class MusicSearchService {
     return results;
   }
 
-  /**
-   * Скачивает трек. Если он защищён DRM, ищет тот же трек у других поставщиков.
-   */
   public File download(TrackResult track, Quality quality) {
     MusicSearchProvider provider = providers.get(track.provider());
     if (provider == null) {
       throw new UserFacingException("Поставщик " + track.provider().getTitle() + " недоступен");
     }
-    try {
-      return provider.download(track, quality);
-    } catch (DrmProtectedException e) {
-      File replacement = downloadFromOtherProviders(track.display(), track.provider(), quality);
-      if (replacement == null) {
-        throw e;
-      }
-      return replacement;
-    }
+    return provider.download(track, quality);
   }
 
   /**
-   * Ищет трек по названию у всех доступных поставщиков, кроме {@code exclude}, и скачивает
-   * первый найденный. {@code null}, если нигде не нашлось или не скачалось.
+   * Тот же трек у других поставщиков: по лучшему совпадению от каждого, чтобы предложить
+   * пользователю выбор, если скачать из {@code failed} не получилось.
    */
-  public File downloadFromOtherProviders(String query, MusicProvider exclude, Quality quality) {
-    for (MusicProvider other : availableProviders()) {
-      if (other == exclude) {
-        continue;
-      }
-      MusicSearchProvider provider = providers.get(other);
-      List<TrackResult> found = provider.search(query, 1);
-      if (found.isEmpty()) {
-        continue;
-      }
-      try {
-        log.info("«{}» недоступен в {}, скачиваю из {}: {}", query, exclude, other,
-            found.getFirst().display());
-        return provider.download(found.getFirst(), quality);
-      } catch (Exception e) {
-        log.warn("Замена «{}» из {} не удалась: {}", query, other, e.getMessage());
-      }
-    }
-    return null;
+  public List<TrackResult> findAlternatives(String query, MusicProvider failed) {
+    List<MusicProvider> others = availableProviders().stream()
+        .filter(provider -> provider != failed)
+        .toList();
+    return searchAll(query, others, 1);
   }
 
   public String rememberTrack(TrackResult track) {

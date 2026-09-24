@@ -13,12 +13,10 @@ import java.time.Duration;
 import java.util.List;
 import java.util.regex.Pattern;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import ru.whitebeef.beefsavebot.dto.DownloadOptions;
 import ru.whitebeef.beefsavebot.model.MusicProvider;
 import ru.whitebeef.beefsavebot.model.Quality;
-import ru.whitebeef.beefsavebot.service.music.MusicSearchService;
 
 /**
  * Треки SoundCloud через yt-dlp: сразу в MP3 с исполнителем и названием в тегах.
@@ -31,37 +29,25 @@ public class SoundCloudDownloadService implements DownloadService {
       "^(?:https?://)?(?:www\\.|m\\.|on\\.)?soundcloud\\.(?:com|app\\.goo\\.gl)/\\S+$");
 
   private final YtDlpAudioDownloader audioDownloader;
-  /**
-   * Лениво, чтобы не было циклической зависимости через поставщиков музыки.
-   */
-  private final ObjectProvider<MusicSearchService> musicSearchService;
   private final HttpClient httpClient = HttpClient.newBuilder()
       .followRedirects(HttpClient.Redirect.NORMAL)
       .connectTimeout(Duration.ofSeconds(10))
       .build();
 
-  public SoundCloudDownloadService(YtDlpAudioDownloader audioDownloader,
-      ObjectProvider<MusicSearchService> musicSearchService) {
+  public SoundCloudDownloadService(YtDlpAudioDownloader audioDownloader) {
     this.audioDownloader = audioDownloader;
-    this.musicSearchService = musicSearchService;
   }
 
   /**
-   * Прямая ссылка на трек. Если он защищён DRM, узнаём название через oEmbed SoundCloud и ищем
-   * тот же трек у других поставщиков музыки.
+   * Прямая ссылка на трек. Если он защищён DRM, узнаём название через oEmbed SoundCloud, чтобы
+   * бот мог предложить скачать тот же трек из других сервисов.
    */
   @Override
   public File downloadVideo(String url, DownloadOptions options) {
     try {
       return downloadTrack(url, options.quality());
     } catch (DrmProtectedException e) {
-      String name = trackName(resolveShortLink(url));
-      File replacement = name == null ? null : musicSearchService.getObject()
-          .downloadFromOtherProviders(name, MusicProvider.SOUNDCLOUD, options.quality());
-      if (replacement == null) {
-        throw e;
-      }
-      return replacement;
+      throw new DrmProtectedException(trackName(resolveShortLink(url)), MusicProvider.SOUNDCLOUD);
     }
   }
 

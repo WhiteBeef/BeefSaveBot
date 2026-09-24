@@ -2,7 +2,6 @@ package ru.whitebeef.beefsavebot.service.music;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -114,68 +113,38 @@ class MusicSearchServiceTest {
 
   @Test
   void recognizesSoundCloudLinks() {
-    SoundCloudDownloadService service = new SoundCloudDownloadService(null, null);
+    SoundCloudDownloadService service = new SoundCloudDownloadService(null);
     assertTrue(service.canDownloadVideo("https://soundcloud.com/artist/track"));
     assertTrue(service.canDownloadVideo("https://on.soundcloud.com/AbCdEf"));
     assertTrue(service.canDownloadVideo("https://m.soundcloud.com/artist/track?si=1"));
     assertFalse(service.canDownloadVideo("https://youtube.com/watch?v=x"));
   }
 
-  private static MusicSearchProvider drmProvider(MusicProvider id) {
-    return new MusicSearchProvider() {
-      @Override
-      public MusicProvider provider() {
-        return id;
-      }
-
-      @Override
-      public List<TrackResult> search(String query, int limit) {
-        return List.of();
-      }
-
-      @Override
-      public File download(TrackResult track, Quality quality) {
-        throw new DrmProtectedException();
-      }
-    };
-  }
-
   @Test
-  void drmProtectedTrackIsReplacedFromAnotherProvider() {
-    File yandexFile = new File("Artist - Song.mp3");
-    MusicSearchProvider yandex = new MusicSearchProvider() {
-      @Override
-      public MusicProvider provider() {
-        return MusicProvider.YANDEX;
-      }
-
-      @Override
-      public List<TrackResult> search(String query, int limit) {
-        assertEquals("Artist - Song", query);
-        return List.of(new TrackResult(MusicProvider.YANDEX, "42", "Artist", "Song"));
-      }
-
-      @Override
-      public File download(TrackResult track, Quality quality) {
-        return yandexFile;
-      }
-    };
-    MusicSearchService service = new MusicSearchService(List.of(yandex,
-        drmProvider(MusicProvider.SOUNDCLOUD)));
-
-    File result = service.download(new TrackResult(MusicProvider.SOUNDCLOUD,
-        "https://soundcloud.com/a/song", "Artist", "Song"), Quality.HIGH);
-    assertEquals(yandexFile, result);
-  }
-
-  @Test
-  void drmErrorIsRethrownWhenNoReplacement() {
+  void findsOneAlternativePerOtherProvider() {
     MusicSearchService service = new MusicSearchService(List.of(
-        drmProvider(MusicProvider.SOUNDCLOUD),
-        provider(MusicProvider.YANDEX, true, List.of())));
-    assertThrows(DrmProtectedException.class, () -> service.download(new TrackResult(
-        MusicProvider.SOUNDCLOUD, "https://soundcloud.com/a/song", "Artist", "Song"),
-        Quality.HIGH));
+        provider(MusicProvider.SOUNDCLOUD, true, List.of("s1")),
+        provider(MusicProvider.YANDEX, true, List.of("y1", "y2")),
+        provider(MusicProvider.YOUTUBE_MUSIC, true, List.of("m1", "m2"))));
+
+    List<TrackResult> alternatives = service.findAlternatives("Artist - Song",
+        MusicProvider.SOUNDCLOUD);
+    assertEquals(List.of("y1", "m1"), alternatives.stream().map(TrackResult::id).toList());
+  }
+
+  @Test
+  void noAlternativesWhenNothingElseAvailable() {
+    MusicSearchService service = new MusicSearchService(List.of(
+        provider(MusicProvider.SOUNDCLOUD, true, List.of("s1")),
+        provider(MusicProvider.YANDEX, false, List.of("y1"))));
+    assertTrue(service.findAlternatives("q", MusicProvider.SOUNDCLOUD).isEmpty());
+  }
+
+  @Test
+  void drmExceptionKeepsTrackNameForAlternatives() {
+    DrmProtectedException e = new DrmProtectedException("Artist Song", MusicProvider.SOUNDCLOUD);
+    assertEquals("Artist Song", e.getTrackName());
+    assertTrue(e.getMessage().contains("SoundCloud"));
   }
 
   @Test
