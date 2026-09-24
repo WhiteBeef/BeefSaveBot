@@ -1,5 +1,7 @@
 package ru.whitebeef.beefsavebot.dto;
 
+import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
+import ru.whitebeef.beefsavebot.model.OutputFormat;
 import ru.whitebeef.beefsavebot.model.Quality;
 
 /**
@@ -9,4 +11,14 @@ import ru.whitebeef.beefsavebot.model.Quality;
  */
 public record DownloadOptions(Quality quality, boolean audioOnly, long maxSourceBytes) {
 
+  /**
+   * Для обрезки и извлечения звука исходник можно брать больше итогового лимита: результат всё
+   * равно получится меньше.
+   */
+  public static DownloadOptions of(Quality quality, OutputFormat format, boolean crop,
+      DownloadConfiguration configuration) {
+    return new DownloadOptions(quality, format.isAudioOnly(),
+        crop || format.isAudioOnly() ? configuration.getSourceMaxBytes()
+            : configuration.getMaxBytes());
+  }
 }
