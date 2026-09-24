@@ -102,7 +102,8 @@ public class InlineDownloadHandler {
       return;
     }
     if (link == null) {
-      answer(bot, query, List.of(), "Вставьте ссылку на видео");
+      // Пустой ответ без кнопки: ничто не мешает отправить набранный текст обычным сообщением
+      answer(bot, query, List.of(), null);
       return;
     }
     if (!videoDownloadService.canDownloadVideo(link.url())) {

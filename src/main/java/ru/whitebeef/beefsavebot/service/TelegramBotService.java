@@ -123,6 +123,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
         new BotCommand("start", "Что умеет бот"),
         new BotCommand("settings", "Качество и формат"),
         new BotCommand("crop", "Обрезать видео: /crop ссылка начало конец"),
+        new BotCommand("save", "Скачать видео по ссылке из сообщения, на которое отвечаете"),
         new BotCommand("convert", "Конвертер файлов"),
         new BotCommand("help", "Помощь"));
     try {
@@ -206,7 +207,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
         return;
       }
       if (text.startsWith("/")) {
-        handleCommand(chatId, userInfo, text, admin);
+        handleCommand(chatId, userInfo, message, text, admin);
         return;
       }
       if (!message.isUserMessage()) {
@@ -250,9 +251,33 @@ public class TelegramBotService extends TelegramLongPollingBot {
       replyTo = message.getReplyToMessage().getMessageId();
     }
     if (link == null) {
-      sendText(chatId, "Пришлите ссылку вместе с упоминанием: " + mention + " <ссылка>\n"
-          + "Или ответьте упоминанием " + mention + " на сообщение со ссылкой.\n"
-          + "Можно сразу вырезать фрагмент: " + mention + " <ссылка> 0:10 0:25");
+      sendText(chatId, "Ответьте командой /save на сообщение со ссылкой — я скачаю видео.\n"
+          + "Или напишите ссылку вместе с упоминанием: скачай " + mention + " <ссылка>\n"
+          + "Можно сразу вырезать фрагмент: /save 0:10 0:25");
+      return;
+    }
+    if (!videoDownloadService.canDownloadVideo(link.url())) {
+      sendText(chatId, "Не умею скачивать по этой ссылке :(");
+      return;
+    }
+    handleDownload(chatId, userInfo, link.url(), link.crop(), replyTo);
+  }
+
+  /**
+   * «/save» в ответ на сообщение со ссылкой (или «/save ссылка»). В отличие от «@бот» в начале
+   * сообщения, команда не включает инлайн-режим Telegram, поэтому её всегда можно отправить.
+   */
+  private void handleSave(Long chatId, UserInfo userInfo, Message message, String args)
+      throws TelegramApiException {
+    LinkRequest link = parseLink(chatId, args);
+    Integer replyTo = message.isUserMessage() ? null : message.getMessageId();
+    if (link == null && message.getReplyToMessage() != null) {
+      link = linkFromReply(chatId, message.getReplyToMessage(), args);
+      replyTo = message.getReplyToMessage().getMessageId();
+    }
+    if (link == null) {
+      sendText(chatId, "Ответьте командой /save на сообщение со ссылкой на видео "
+          + "или напишите /save <ссылка>.\nМожно сразу вырезать фрагмент: /save 0:10 0:25");
       return;
     }
     if (!videoDownloadService.canDownloadVideo(link.url())) {
@@ -361,8 +386,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
 
   // ---------------------------------------------------------------- команды
 
-  private void handleCommand(Long chatId, UserInfo userInfo, String text, boolean admin)
-      throws TelegramApiException {
+  private void handleCommand(Long chatId, UserInfo userInfo, Message message, String text,
+      boolean admin) throws TelegramApiException {
     String[] parts = text.split("\\s+", 2);
     String command = parts[0].toLowerCase();
     int botNameIndex = command.indexOf('@');
@@ -384,6 +409,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
         sendHtml(chatId, settingsText(userInfo), settingsKeyboard(userInfo));
       }
       case "/crop" -> handleCrop(chatId, userInfo, args);
+      case "/save", "/dl" -> handleSave(chatId, userInfo, message, args);
       case "/convert" -> {
         requestService.saveRequest(userInfo, RequestType.COMMAND, text, null, null);
         sendHtml(chatId, "🔄 <b>Конвертер</b>\n\nПришлите файл (до 20 МБ) или архив с файлами — "
@@ -420,8 +446,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         + "/help — это сообщение\n\n"
         + "<b>В любом чате:</b> напиши <code>@" + Html.escape(getBotUsername())
         + " ссылка</code> и выбери подсказку — видео отправится прямо в этот чат. "
-        + "В группах, где есть бот, можно упомянуть его со ссылкой или ответить упоминанием "
-        + "на сообщение со ссылкой — видео придёт ответом на него. "
+        + "В группах, где есть бот, ответьте командой /save на сообщение со ссылкой — видео "
+        + "придёт ответом на него. Или упомяните бота со ссылкой в тексте сообщения. "
         + "После ссылки можно указать начало и конец фрагмента: <code>ссылка 0:10 0:25</code>\n\n"
         + "👨‍💻 Автор: " + author + "\n\n"
         + "💚 Бот работает на безвозмездной основе — без рекламы и платных подписок. "
