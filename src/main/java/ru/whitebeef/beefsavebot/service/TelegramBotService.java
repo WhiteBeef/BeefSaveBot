@@ -31,6 +31,7 @@ import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.Document;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
+import org.telegram.telegrambots.meta.api.objects.MessageEntity;
 import org.telegram.telegrambots.meta.api.objects.PhotoSize;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.User;
@@ -209,12 +210,16 @@ public class TelegramBotService extends TelegramLongPollingBot {
         return;
       }
       if (!message.isUserMessage()) {
-        handleGroupMessage(chatId, userInfo, text);
+        handleGroupMessage(chatId, userInfo, message, text);
         return;
       }
       LinkRequest link = parseLink(chatId, text);
+      if (link == null && message.getReplyToMessage() != null) {
+        // Ответ на сообщение со ссылкой: в тексте могут быть только таймкоды
+        link = linkFromReply(chatId, message.getReplyToMessage(), text);
+      }
       if (link != null) {
-        handleDownload(chatId, userInfo, link.url(), link.crop());
+        handleDownload(chatId, userInfo, link.url(), link.crop(), null);
       } else {
         // Ссылок нет — ищем текст как название трека
         handleDownload(chatId, userInfo, text, null);
@@ -228,15 +233,25 @@ public class TelegramBotService extends TelegramLongPollingBot {
   /**
    * В группах бот реагирует только на упоминание: «@бот ссылка [начало конец]».
    */
-  private void handleGroupMessage(Long chatId, UserInfo userInfo, String text)
+  /**
+   * В группах бот реагирует только на упоминание: «@бот ссылка [начало конец]» или «@бот» в ответ
+   * на сообщение со ссылкой — тогда видео приходит ответом на это сообщение.
+   */
+  private void handleGroupMessage(Long chatId, UserInfo userInfo, Message message, String text)
       throws TelegramApiException {
     String mention = "@" + getBotUsername();
     if (!text.toLowerCase().contains(mention.toLowerCase())) {
       return;
     }
     LinkRequest link = parseLink(chatId, text);
+    Integer replyTo = message.getMessageId();
+    if (link == null && message.getReplyToMessage() != null) {
+      link = linkFromReply(chatId, message.getReplyToMessage(), text);
+      replyTo = message.getReplyToMessage().getMessageId();
+    }
     if (link == null) {
       sendText(chatId, "Пришлите ссылку вместе с упоминанием: " + mention + " <ссылка>\n"
+          + "Или ответьте упоминанием " + mention + " на сообщение со ссылкой.\n"
           + "Можно сразу вырезать фрагмент: " + mention + " <ссылка> 0:10 0:25");
       return;
     }
@@ -244,7 +259,49 @@ public class TelegramBotService extends TelegramLongPollingBot {
       sendText(chatId, "Не умею скачивать по этой ссылке :(");
       return;
     }
-    handleDownload(chatId, userInfo, link.url(), link.crop());
+    handleDownload(chatId, userInfo, link.url(), link.crop(), replyTo);
+  }
+
+  /**
+   * Ссылка из сообщения, на которое ответили; таймкоды берутся из текста ответа
+   * («@бот 0:10 0:25»). {@code null}, если ссылки там нет.
+   */
+  private LinkRequest linkFromReply(Long chatId, Message reply, String text)
+      throws TelegramApiException {
+    LinkRequest replyLink = parseLink(chatId, linkSource(reply));
+    if (replyLink == null) {
+      return null;
+    }
+    String timeCodes = text.replaceAll("@\\S+", " ").trim();
+    return parseLink(chatId, replyLink.url() + " " + timeCodes);
+  }
+
+  /**
+   * Текст сообщения вместе со ссылками, спрятанными под словами (text_link), и подписью к медиа.
+   */
+  static String linkSource(Message message) {
+    StringBuilder source = new StringBuilder();
+    List<MessageEntity> entities = new ArrayList<>();
+    if (message.getText() != null) {
+      source.append(message.getText());
+      if (message.getEntities() != null) {
+        entities.addAll(message.getEntities());
+      }
+    }
+    if (message.getCaption() != null) {
+      source.append(' ').append(message.getCaption());
+      if (message.getCaptionEntities() != null) {
+        entities.addAll(message.getCaptionEntities());
+      }
+    }
+    // Ссылки под текстом ставим в начало: у них приоритет над упоминаниями в тексте
+    StringBuilder hidden = new StringBuilder();
+    for (MessageEntity entity : entities) {
+      if ("text_link".equals(entity.getType()) && entity.getUrl() != null) {
+        hidden.append(entity.getUrl()).append(' ');
+      }
+    }
+    return hidden.toString() + source;
   }
 
   /**
@@ -363,7 +420,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         + "/help — это сообщение\n\n"
         + "<b>В любом чате:</b> напиши <code>@" + Html.escape(getBotUsername())
         + " ссылка</code> и выбери подсказку — видео отправится прямо в этот чат. "
-        + "В группах, где есть бот, можно просто упомянуть его со ссылкой. "
+        + "В группах, где есть бот, можно упомянуть его со ссылкой или ответить упоминанием "
+        + "на сообщение со ссылкой — видео придёт ответом на него. "
         + "После ссылки можно указать начало и конец фрагмента: <code>ссылка 0:10 0:25</code>\n\n"
         + "👨‍💻 Автор: " + author + "\n\n"
         + "💚 Бот работает на безвозмездной основе — без рекламы и платных подписок. "
@@ -482,6 +540,14 @@ public class TelegramBotService extends TelegramLongPollingBot {
 
   private void handleDownload(Long chatId, UserInfo userInfo, String url, CropRange crop)
       throws TelegramApiException {
+    handleDownload(chatId, userInfo, url, crop, null);
+  }
+
+  /**
+   * @param replyTo сообщение, ответом на которое прислать результат, или {@code null}
+   */
+  private void handleDownload(Long chatId, UserInfo userInfo, String url, CropRange crop,
+      Integer replyTo) throws TelegramApiException {
     RequestType requestType = crop == null ? RequestType.DOWNLOAD : RequestType.CROP;
     String requestText = crop == null ? url : url + " " + crop.start().source() + " "
         + crop.end().source();
@@ -509,7 +575,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
     DownloadOptions options = new DownloadOptions(quality, format.isAudioOnly(),
         crop != null || format.isAudioOnly() ? downloadConfiguration.getSourceMaxBytes()
             : downloadConfiguration.getMaxBytes());
-    processAndSend(chatId, requestLog, mediaType, format, quality, crop,
+    processAndSend(chatId, replyTo, requestLog, mediaType, format, quality, crop,
         () -> videoDownloadService.downloadVideo(url, options));
   }
 
@@ -517,11 +583,12 @@ public class TelegramBotService extends TelegramLongPollingBot {
     Quality quality = userInfo.getQuality();
     RequestLog requestLog = requestService.saveRequest(userInfo, RequestType.TRACK,
         "yandex-music-search:" + trackId, quality, OutputFormat.MP3);
-    processAndSend(chatId, requestLog, MediaType.AUDIO, OutputFormat.MP3, quality, null,
+    processAndSend(chatId, null, requestLog, MediaType.AUDIO, OutputFormat.MP3, quality, null,
         () -> yandexMusicDownloadService.downloadTrackById(trackId, quality));
   }
 
-  private void processAndSend(Long chatId, RequestLog requestLog, MediaType mediaType,
+  private void processAndSend(Long chatId, Integer replyTo, RequestLog requestLog,
+      MediaType mediaType,
       OutputFormat format, Quality quality, CropRange crop, Downloader downloader) {
     File source = null;
     File result = null;
@@ -534,7 +601,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
       source = downloader.download();
       result = mediaProcessingService.process(source, format, quality, crop);
       long size = Files.size(result.toPath());
-      sendMedia(chatId, result, format, mediaType);
+      sendMedia(chatId, replyTo, result, format, mediaType);
       requestService.markDownloaded(requestLog, size);
     } catch (UserFacingException e) {
       log.warn("Запрос {} не выполнен: {}", requestLog.getUrl(), e.getMessage());
@@ -589,8 +656,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         : text.substring(0, BUTTON_TEXT_LIMIT - 1) + "…";
   }
 
-  private void sendMedia(Long chatId, File file, OutputFormat format, MediaType mediaType)
-      throws TelegramApiException, IOException {
+  private void sendMedia(Long chatId, Integer replyTo, File file, OutputFormat format,
+      MediaType mediaType) throws TelegramApiException, IOException {
     long size = Files.size(file.toPath());
     log.info("Размер файла: {} bytes", size);
     if (size > TELEGRAM_UPLOAD_LIMIT) {
@@ -609,16 +676,22 @@ public class TelegramBotService extends TelegramLongPollingBot {
             .audio(inputFile)
             .performer(tags.performer())
             .title(tags.title())
+            .replyToMessageId(replyTo)
+            .allowSendingWithoutReply(true)
             .build());
       }
       case MP4 -> execute(SendVideo.builder()
           .chatId(chatId.toString())
           .video(inputFile)
           .supportsStreaming(true)
+          .replyToMessageId(replyTo)
+          .allowSendingWithoutReply(true)
           .build());
       case WEBM, WEBP -> execute(SendDocument.builder()
           .chatId(chatId.toString())
           .document(inputFile)
+          .replyToMessageId(replyTo)
+          .allowSendingWithoutReply(true)
           .build());
     }
   }
