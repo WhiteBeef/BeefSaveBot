@@ -7,6 +7,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
+import org.telegram.telegrambots.meta.api.methods.GetFile;
 import org.telegram.telegrambots.meta.api.methods.ParseMode;
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
 import org.telegram.telegrambots.meta.api.methods.send.SendAudio;
@@ -24,11 +26,18 @@ import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendVideo;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
+import org.telegram.telegrambots.meta.api.objects.Audio;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
+import org.telegram.telegrambots.meta.api.objects.Document;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
+import org.telegram.telegrambots.meta.api.objects.PhotoSize;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.User;
+import org.telegram.telegrambots.meta.api.objects.Video;
+import org.telegram.telegrambots.meta.api.objects.VideoNote;
+import org.telegram.telegrambots.meta.api.objects.Voice;
+import org.telegram.telegrambots.meta.api.objects.games.Animation;
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand;
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeChat;
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeDefault;
@@ -40,12 +49,19 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 import ru.whitebeef.beefsavebot.configuration.BotConfiguration;
 import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
 import ru.whitebeef.beefsavebot.dto.DownloadOptions;
+import ru.whitebeef.beefsavebot.dto.Screen;
 import ru.whitebeef.beefsavebot.dto.UserInfoDto;
 import ru.whitebeef.beefsavebot.entity.RequestLog;
 import ru.whitebeef.beefsavebot.entity.UserInfo;
 import ru.whitebeef.beefsavebot.model.OutputFormat;
 import ru.whitebeef.beefsavebot.model.Quality;
 import ru.whitebeef.beefsavebot.model.RequestType;
+import ru.whitebeef.beefsavebot.service.admin.AdminPanel;
+import ru.whitebeef.beefsavebot.service.admin.AdminService;
+import ru.whitebeef.beefsavebot.service.convert.ConversionResult;
+import ru.whitebeef.beefsavebot.service.convert.ConversionService;
+import ru.whitebeef.beefsavebot.service.convert.ConversionSession;
+import ru.whitebeef.beefsavebot.service.convert.Formats;
 import ru.whitebeef.beefsavebot.service.download.MediaType;
 import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 import ru.whitebeef.beefsavebot.service.download.YandexMusicDownloadService;
@@ -64,13 +80,16 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private static final String TRACK_CALLBACK_PREFIX = "ym_track:";
   private static final String QUALITY_CALLBACK_PREFIX = "set:q:";
   private static final String FORMAT_CALLBACK_PREFIX = "set:f:";
-  private static final String ADMIN_CALLBACK_PREFIX = "adm:";
   private static final int BUTTON_TEXT_LIMIT = 64;
   private static final int MESSAGE_LIMIT = 4000;
   /**
    * Ограничение Bot API на отправку файлов.
    */
   private static final long TELEGRAM_UPLOAD_LIMIT = 50L * 1024 * 1024;
+  /**
+   * Ограничение Bot API на скачивание файлов ботом.
+   */
+  private static final long TELEGRAM_DOWNLOAD_LIMIT = 20L * 1024 * 1024;
 
   private final BotConfiguration botConfig;
   private final DownloadConfiguration downloadConfiguration;
@@ -80,6 +99,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private final RequestService requestService;
   private final UserService userService;
   private final AdminService adminService;
+  private final AdminPanel adminPanel;
+  private final ConversionService conversionService;
   private final ExecutorService executorService = Executors.newFixedThreadPool(10);
 
   @PostConstruct
@@ -99,6 +120,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
         new BotCommand("start", "Что умеет бот"),
         new BotCommand("settings", "Качество и формат"),
         new BotCommand("crop", "Обрезать видео: /crop ссылка начало конец"),
+        new BotCommand("convert", "Конвертер файлов"),
         new BotCommand("help", "Помощь"));
     try {
       execute(SetMyCommands.builder()
@@ -111,7 +133,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         adminCommands.addAll(List.of(
             new BotCommand("admin", "Админка"),
             new BotCommand("stats", "Статистика"),
-            new BotCommand("requests", "Последние запросы"),
+            new BotCommand("requests", "Все запросы"),
+            new BotCommand("byusers", "Запросы по пользователям"),
             new BotCommand("find", "Поиск по запросам"),
             new BotCommand("errors", "Последние ошибки"),
             new BotCommand("users", "Пользователи"),
@@ -137,7 +160,16 @@ public class TelegramBotService extends TelegramLongPollingBot {
       executorService.execute(() -> this.executeCallback(update));
       return;
     }
-    if (!update.hasMessage() || !update.getMessage().hasText()) {
+    if (!update.hasMessage()) {
+      return;
+    }
+    Message message = update.getMessage();
+    // Файлы конвертируем только в личке, чтобы не отвечать на каждую картинку в группах
+    if (message.isUserMessage() && incomingFile(message) != null) {
+      executorService.execute(() -> this.executeFile(update));
+      return;
+    }
+    if (!message.hasText()) {
       return;
     }
     executorService.execute(() -> this.executeUpdate(update));
@@ -185,9 +217,11 @@ public class TelegramBotService extends TelegramLongPollingBot {
         handleTrackCallback(chatId, userInfo, data.substring(TRACK_CALLBACK_PREFIX.length()));
       } else if (data.startsWith(QUALITY_CALLBACK_PREFIX) || data.startsWith(FORMAT_CALLBACK_PREFIX)) {
         handleSettingsCallback(callbackQuery, userInfo, data);
-      } else if (data.startsWith(ADMIN_CALLBACK_PREFIX) && admin) {
-        answerCallback(callbackQuery, null);
-        handleAdminCommand(chatId, "/" + data.substring(ADMIN_CALLBACK_PREFIX.length()), "");
+      } else if (data.startsWith(ConversionService.CALLBACK_PREFIX)) {
+        handleConversionCallback(callbackQuery, userInfo,
+            data.substring(ConversionService.CALLBACK_PREFIX.length()));
+      } else if (data.startsWith(AdminPanel.CALLBACK_PREFIX) && admin) {
+        handleAdminCallback(callbackQuery, data.substring(AdminPanel.CALLBACK_PREFIX.length()));
       } else {
         answerCallback(callbackQuery, null);
       }
@@ -222,6 +256,13 @@ public class TelegramBotService extends TelegramLongPollingBot {
         sendHtml(chatId, settingsText(userInfo), settingsKeyboard(userInfo));
       }
       case "/crop" -> handleCrop(chatId, userInfo, args);
+      case "/convert" -> {
+        requestService.saveRequest(userInfo, RequestType.COMMAND, text, null, null);
+        sendHtml(chatId, "🔄 <b>Конвертер</b>\n\nПришлите файл (до 20 МБ) или архив с файлами — "
+            + "я предложу, во что его превратить. Для архива можно выбрать свой формат для "
+            + "каждого типа файлов внутри, результат придёт архивом.\n\n"
+            + conversionService.supportedFormatsText(), null);
+      }
       default -> {
         requestService.saveRequest(userInfo, RequestType.COMMAND, text, null, null);
         sendText(chatId, "Не знаю такой команды 🤔 Список команд — /help");
@@ -241,10 +282,13 @@ public class TelegramBotService extends TelegramLongPollingBot {
         + "<b>Что ещё умею:</b>\n"
         + "🎵 Искать треки в Яндекс Музыке — просто напиши название песни\n"
         + "⚙️ Присылать файл в нужном формате (MP4, MP3, WEBM, WEBP) и качестве — /settings\n"
-        + "✂️ Вырезать фрагмент видео с точностью до кадра — /crop\n\n"
+        + "✂️ Вырезать фрагмент видео с точностью до кадра — /crop\n"
+        + "🔄 Конвертировать файлы и целые архивы: картинки, видео, аудио, документы, таблицы, "
+        + "презентации, данные — просто пришли файл (подробнее — /convert)\n\n"
         + "<b>Команды:</b>\n"
         + "/settings — качество и формат\n"
         + "/crop &lt;ссылка&gt; &lt;начало&gt; &lt;конец&gt; — обрезать видео\n"
+        + "/convert — какие форматы умею конвертировать\n"
         + "/help — это сообщение\n\n"
         + "👨‍💻 Автор: " + author + "\n\n"
         + "💚 Бот работает на безвозмездной основе — без рекламы и платных подписок. "
@@ -498,6 +542,217 @@ public class TelegramBotService extends TelegramLongPollingBot {
     }
   }
 
+  // ---------------------------------------------------------------- конвертер
+
+  private record IncomingFile(String fileId, String fileName, Long size) {
+
+  }
+
+  /**
+   * Файл из сообщения (документ, фото, аудио, видео, голосовое…) или {@code null}.
+   */
+  private IncomingFile incomingFile(Message message) {
+    long id = message.getMessageId();
+    if (message.hasAnimation()) {
+      Animation animation = message.getAnimation();
+      return new IncomingFile(animation.getFileId(), nameOrDefault(animation.getFileName(),
+          animation.getMimetype(), "animation_" + id, "mp4"), animation.getFileSize());
+    }
+    if (message.hasDocument()) {
+      Document document = message.getDocument();
+      return new IncomingFile(document.getFileId(), nameOrDefault(document.getFileName(),
+          document.getMimeType(), "file_" + id, ""), document.getFileSize());
+    }
+    if (message.hasPhoto()) {
+      PhotoSize photo = message.getPhoto().stream()
+          .max(Comparator.comparingInt(size -> size.getWidth() * size.getHeight()))
+          .orElseThrow();
+      return new IncomingFile(photo.getFileId(), "photo_" + id + ".jpg",
+          photo.getFileSize() == null ? null : photo.getFileSize().longValue());
+    }
+    if (message.hasAudio()) {
+      Audio audio = message.getAudio();
+      return new IncomingFile(audio.getFileId(), nameOrDefault(audio.getFileName(),
+          audio.getMimeType(), "audio_" + id, "mp3"), audio.getFileSize());
+    }
+    if (message.hasVideo()) {
+      Video video = message.getVideo();
+      return new IncomingFile(video.getFileId(), nameOrDefault(video.getFileName(),
+          video.getMimeType(), "video_" + id, "mp4"), video.getFileSize());
+    }
+    if (message.hasVoice()) {
+      Voice voice = message.getVoice();
+      return new IncomingFile(voice.getFileId(), "voice_" + id + ".ogg", voice.getFileSize());
+    }
+    if (message.hasVideoNote()) {
+      VideoNote videoNote = message.getVideoNote();
+      return new IncomingFile(videoNote.getFileId(), "video_note_" + id + ".mp4",
+          videoNote.getFileSize() == null ? null : videoNote.getFileSize().longValue());
+    }
+    return null;
+  }
+
+  /**
+   * Имя файла; если его нет или у него нет расширения — достраиваем по MIME-типу.
+   */
+  private static String nameOrDefault(String fileName, String mimeType, String fallbackBase,
+      String fallbackExtension) {
+    String name = fileName == null || fileName.isBlank() ? fallbackBase : fileName;
+    if (Formats.of(name).isEmpty()) {
+      String extension = Formats.fromMimeType(mimeType);
+      if (extension.isEmpty()) {
+        extension = fallbackExtension;
+      }
+      if (!extension.isEmpty()) {
+        name = name + "." + extension;
+      }
+    }
+    return name;
+  }
+
+  public void executeFile(Update update) {
+    Message message = update.getMessage();
+    Long chatId = message.getChatId();
+    try {
+      UserInfo userInfo = userService.updateOrCreate(toDto(message.getFrom()));
+      if (Boolean.TRUE.equals(userInfo.getBanned())
+          && !botConfig.isAdmin(userInfo.getTelegramUserId())) {
+        sendText(chatId, "⛔ Доступ к боту ограничен.");
+        return;
+      }
+      IncomingFile incoming = incomingFile(message);
+      if (incoming.size() != null && incoming.size() > TELEGRAM_DOWNLOAD_LIMIT) {
+        sendText(chatId, "⚠️ Telegram разрешает ботам скачивать файлы только до 20 МБ. "
+            + "Пришлите файл поменьше или упакуйте его в архив по частям.");
+        return;
+      }
+      File downloaded = downloadFile(execute(GetFile.builder().fileId(incoming.fileId()).build()));
+      sendScreen(chatId, conversionService.start(userInfo.getTelegramUserId(),
+          downloaded.toPath(), incoming.fileName()));
+    } catch (UserFacingException e) {
+      trySendText(chatId, "⚠️ " + e.getMessage());
+    } catch (Exception e) {
+      log.error("Ошибка при приёме файла: {}", e.getMessage(), e);
+      trySendText(chatId, "Не удалось обработать файл. Попробуйте ещё раз, или напишите "
+          + botConfig.getAuthor());
+    }
+  }
+
+  private void handleConversionCallback(CallbackQuery callbackQuery, UserInfo userInfo,
+      String route) throws Exception {
+    String[] parts = route.split(":");
+    Long chatId = callbackQuery.getMessage().getChatId();
+    Integer messageId = callbackQuery.getMessage().getMessageId();
+    Optional<ConversionSession> found = conversionService.find(parts[0]);
+    if (found.isEmpty()) {
+      answerCallback(callbackQuery, "Файл устарел — пришлите его ещё раз", true);
+      return;
+    }
+    ConversionSession session = found.get();
+    if (session.getUserId() != userInfo.getTelegramUserId()) {
+      answerCallback(callbackQuery, "Это не ваш файл", true);
+      return;
+    }
+    if (session.getBusy().get()) {
+      answerCallback(callbackQuery, "Уже конвертирую, подождите…");
+      return;
+    }
+    String action = parts.length > 1 ? parts[1] : "";
+    switch (action) {
+      case "x" -> {
+        answerCallback(callbackQuery, null);
+        conversionService.close(session);
+        editScreen(chatId, messageId, new Screen("✖️ Конвертация «"
+            + Html.escape(session.getFileName()) + "» отменена", null));
+      }
+      case "o" -> {
+        answerCallback(callbackQuery, null);
+        editScreen(chatId, messageId, conversionService.overview(session));
+      }
+      case "f" -> {
+        answerCallback(callbackQuery, null);
+        editScreen(chatId, messageId, conversionService.groupScreen(session,
+            Integer.parseInt(parts[2])));
+      }
+      case "s" -> {
+        answerCallback(callbackQuery, null);
+        conversionService.select(session, Integer.parseInt(parts[2]), Integer.parseInt(parts[3]));
+        editScreen(chatId, messageId, conversionService.overview(session));
+      }
+      case "t" -> runConversion(callbackQuery, session, userInfo,
+          () -> conversionService.convertSingle(session, Integer.parseInt(parts[2])));
+      case "go" -> {
+        if (session.getGroups().stream().allMatch(group -> group.getSelected() < 0)) {
+          answerCallback(callbackQuery, "Выберите формат хотя бы для одного типа файлов", true);
+          return;
+        }
+        runConversion(callbackQuery, session, userInfo,
+            () -> conversionService.convertArchive(session));
+      }
+      default -> answerCallback(callbackQuery, null);
+    }
+  }
+
+  @FunctionalInterface
+  private interface Conversion {
+
+    ConversionResult run() throws Exception;
+  }
+
+  private void runConversion(CallbackQuery callbackQuery, ConversionSession session,
+      UserInfo userInfo, Conversion conversion) throws TelegramApiException {
+    if (!session.getBusy().compareAndSet(false, true)) {
+      answerCallback(callbackQuery, "Уже конвертирую, подождите…");
+      return;
+    }
+    answerCallback(callbackQuery, null);
+    Long chatId = callbackQuery.getMessage().getChatId();
+    Integer messageId = callbackQuery.getMessage().getMessageId();
+    String fileName = Html.escape(session.getFileName());
+    try {
+      editScreen(chatId, messageId, new Screen("⏳ Конвертирую «" + fileName + "»…", null));
+      ConversionResult result = conversion.run();
+      long size = Files.size(result.file());
+      if (size > TELEGRAM_UPLOAD_LIMIT) {
+        throw new UserFacingException("Результат получился больше 50 МБ — Telegram не даст его "
+            + "отправить :(");
+      }
+      execute(SendDocument.builder()
+          .chatId(chatId.toString())
+          .document(new InputFile(result.file().toFile()))
+          .caption(caption(result.description()))
+          .build());
+      RequestLog requestLog = requestService.saveRequest(userInfo, RequestType.CONVERT,
+          result.description(), null, null);
+      requestService.markDownloaded(requestLog, size);
+      editScreen(chatId, messageId, new Screen("✅ Готово: " + Html.escape(
+          result.description().lines().findFirst().orElse("")), null));
+    } catch (Exception e) {
+      String message = e instanceof UserFacingException ? e.getMessage()
+          : "Не удалось сконвертировать файл";
+      log.warn("Ошибка конвертации {}: {}", session.getFileName(), e.getMessage(), e);
+      RequestLog requestLog = requestService.saveRequest(userInfo, RequestType.CONVERT,
+          session.getFileName(), null, null);
+      requestService.markFailed(requestLog, rootMessage(e));
+      editScreen(chatId, messageId, new Screen("⚠️ " + Html.escape(message) + " («" + fileName
+          + "»)", null));
+    } finally {
+      conversionService.close(session);
+    }
+  }
+
+  private static String caption(String description) {
+    return description.length() <= 1000 ? description : description.substring(0, 999) + "…";
+  }
+
+  private void trySendText(Long chatId, String text) {
+    try {
+      sendText(chatId, text);
+    } catch (TelegramApiException e) {
+      log.error("Ошибка при отправке сообщения: {}", e.getMessage());
+    }
+  }
+
   // ---------------------------------------------------------------- админка
 
   /**
@@ -506,25 +761,24 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private boolean handleAdminCommand(Long chatId, String command, String args)
       throws TelegramApiException {
     switch (command) {
-      case "/admin" -> sendHtml(chatId, adminService.helpText(), adminKeyboard());
-      case "/stats" -> sendHtml(chatId, adminService.statsText(), adminKeyboard());
-      case "/requests" -> sendHtml(chatId,
-          adminService.recentRequestsText(parseNumber(args, 20, 100)), null);
+      case "/admin" -> sendScreen(chatId, adminService.menu());
+      case "/stats" -> sendScreen(chatId, adminService.stats());
+      case "/requests" -> sendScreen(chatId, adminService.requests(parseNumber(args, 1)));
+      case "/byusers" -> sendScreen(chatId, adminService.groupedByUser(parseNumber(args, 1)));
+      case "/errors" -> sendScreen(chatId, adminService.errors(parseNumber(args, 1)));
+      case "/users" -> sendScreen(chatId, adminService.users(parseNumber(args, 1)));
       case "/find" -> {
         if (args.isBlank()) {
           sendText(chatId, "Использование: /find <текст>");
         } else {
-          sendHtml(chatId, adminService.searchRequestsText(args, 30), null);
+          sendScreen(chatId, adminPanel.search(args));
         }
       }
-      case "/errors" -> sendHtml(chatId, adminService.errorsText(parseNumber(args, 10, 50)), null);
-      case "/users" -> sendHtml(chatId, adminService.usersText(parseNumber(args, 1, 100_000)),
-          null);
       case "/user" -> {
         if (args.isBlank()) {
           sendText(chatId, "Использование: /user <id|@username>");
         } else {
-          sendHtml(chatId, adminService.userText(args, 15), null);
+          sendScreen(chatId, adminService.user(args));
         }
       }
       case "/ban", "/unban" -> handleBan(chatId, args, "/ban".equals(command));
@@ -538,20 +792,53 @@ public class TelegramBotService extends TelegramLongPollingBot {
     return true;
   }
 
-  private InlineKeyboardMarkup adminKeyboard() {
-    return InlineKeyboardMarkup.builder()
-        .keyboard(List.of(
-            List.of(adminButton("📊 Статистика", "stats"), adminButton("🕑 Запросы", "requests")),
-            List.of(adminButton("👥 Пользователи", "users"), adminButton("❌ Ошибки", "errors")),
-            List.of(adminButton("📁 Экспорт CSV", "export"))))
-        .build();
+  /**
+   * Кнопки админки перерисовывают то же сообщение.
+   */
+  private void handleAdminCallback(CallbackQuery callbackQuery, String route)
+      throws TelegramApiException {
+    answerCallback(callbackQuery, null);
+    if (AdminPanel.NOOP_ROUTE.equals(route)) {
+      return;
+    }
+    Long chatId = callbackQuery.getMessage().getChatId();
+    if (AdminPanel.EXPORT_ROUTE.equals(route)) {
+      handleExport(chatId);
+      return;
+    }
+    Screen screen = adminPanel.route(route);
+    if (screen != null) {
+      editScreen(chatId, callbackQuery.getMessage().getMessageId(), screen);
+    }
   }
 
-  private InlineKeyboardButton adminButton(String text, String command) {
-    return InlineKeyboardButton.builder()
-        .text(text)
-        .callbackData(ADMIN_CALLBACK_PREFIX + command)
-        .build();
+  private void editScreen(Long chatId, Integer messageId, Screen screen)
+      throws TelegramApiException {
+    try {
+      execute(EditMessageText.builder()
+          .chatId(chatId.toString())
+          .messageId(messageId)
+          .text(screen.text())
+          .parseMode(ParseMode.HTML)
+          .disableWebPagePreview(true)
+          .replyMarkup(screen.keyboard())
+          .build());
+    } catch (TelegramApiRequestException e) {
+      // «message is not modified» при повторном нажатии той же кнопки — не ошибка
+      if (e.getApiResponse() == null || !e.getApiResponse().contains("not modified")) {
+        throw e;
+      }
+    }
+  }
+
+  private void sendScreen(Long chatId, Screen screen) throws TelegramApiException {
+    execute(SendMessage.builder()
+        .chatId(chatId.toString())
+        .text(screen.text())
+        .parseMode(ParseMode.HTML)
+        .disableWebPagePreview(true)
+        .replyMarkup(screen.keyboard())
+        .build());
   }
 
   private void handleBan(Long chatId, String args, boolean ban) throws TelegramApiException {
@@ -569,8 +856,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
       return;
     }
     userService.setBanned(args, ban);
-    sendText(chatId, (ban ? "🚫 Заблокирован: " : "✅ Разблокирован: ")
-        + target.get().displayName());
+    sendScreen(chatId, adminService.user(String.valueOf(target.get().getTelegramUserId())));
   }
 
   private void handleSendToUser(Long chatId, String args) throws TelegramApiException {
@@ -634,10 +920,9 @@ public class TelegramBotService extends TelegramLongPollingBot {
         .build());
   }
 
-  private int parseNumber(String args, int defaultValue, int max) {
+  private int parseNumber(String args, int defaultValue) {
     try {
-      return args.isBlank() ? defaultValue
-          : Math.max(1, Math.min(max, Integer.parseInt(args.trim())));
+      return args.isBlank() ? defaultValue : Math.max(1, Integer.parseInt(args.trim()));
     } catch (NumberFormatException e) {
       return defaultValue;
     }
@@ -705,10 +990,15 @@ public class TelegramBotService extends TelegramLongPollingBot {
   }
 
   private void answerCallback(CallbackQuery callbackQuery, String text) {
+    answerCallback(callbackQuery, text, false);
+  }
+
+  private void answerCallback(CallbackQuery callbackQuery, String text, boolean alert) {
     try {
       execute(AnswerCallbackQuery.builder()
           .callbackQueryId(callbackQuery.getId())
           .text(text)
+          .showAlert(alert)
           .build());
     } catch (TelegramApiException e) {
       log.debug("Не удалось ответить на callback: {}", e.getMessage());

@@ -32,6 +32,9 @@
     <spring.boot.version>3.4.4</spring.boot.version>
     <telegram.bots.version>6.9.7.1</telegram.bots.version>
     <mapstruct-processor.version>1.6.3</mapstruct-processor.version>
+    <commons-compress.version>1.27.1</commons-compress.version>
+    <xz.version>1.10</xz.version>
+    <commonmark.version>0.24.0</commonmark.version>
   </properties>
   <dependencies>
     <dependency>
@@ -93,6 +96,46 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-yaml</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-xml</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-csv</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-toml</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-properties</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-compress</artifactId>
+      <version>${commons-compress.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.tukaani</groupId>
+      <artifactId>xz</artifactId>
+      <version>${xz.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.commonmark</groupId>
+      <artifactId>commonmark</artifactId>
+      <version>${commonmark.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.commonmark</groupId>
+      <artifactId>commonmark-ext-gfm-tables</artifactId>
+      <version>${commonmark.version}</version>
     </dependency>
     <dependency>
       <groupId>org.mapstruct</groupId>

@@ -1,65 +1,88 @@
-package ru.whitebeef.beefsavebot.service;
+package ru.whitebeef.beefsavebot.service.admin;
+
+import static ru.whitebeef.beefsavebot.service.admin.AdminKeyboards.backToMenu;
+import static ru.whitebeef.beefsavebot.service.admin.AdminKeyboards.button;
+import static ru.whitebeef.beefsavebot.service.admin.AdminKeyboards.markup;
+import static ru.whitebeef.beefsavebot.service.admin.AdminKeyboards.numbered;
+import static ru.whitebeef.beefsavebot.service.admin.AdminKeyboards.pagination;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Collectors;
+import java.util.function.Function;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import ru.whitebeef.beefsavebot.configuration.BotConfiguration;
+import ru.whitebeef.beefsavebot.dto.Screen;
 import ru.whitebeef.beefsavebot.entity.RequestLog;
 import ru.whitebeef.beefsavebot.entity.UserInfo;
 import ru.whitebeef.beefsavebot.model.OutputFormat;
 import ru.whitebeef.beefsavebot.model.RequestType;
 import ru.whitebeef.beefsavebot.repository.RequestLogRepository;
 import ru.whitebeef.beefsavebot.repository.UserInfoRepository;
+import ru.whitebeef.beefsavebot.service.UserService;
 import ru.whitebeef.beefsavebot.util.Html;
 
 /**
- * Данные для админки. Все методы возвращают готовый HTML-текст для Telegram.
+ * Экраны админки. Каждый метод возвращает готовый HTML-текст с кнопками навигации.
  */
 @Service
 @RequiredArgsConstructor
 public class AdminService {
 
-  public static final int USERS_PAGE_SIZE = 20;
+  static final int REQUESTS_PAGE_SIZE = 8;
+  static final int USERS_PAGE_SIZE = 10;
+  /**
+   * Запас до лимита Telegram в 4096 символов.
+   */
+  private static final int SCREEN_TEXT_LIMIT = 4000;
   private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("dd.MM.yy HH:mm");
   private static final DateTimeFormatter DATE_TIME_SECONDS =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-  private static final int TEXT_PREVIEW_LIMIT = 300;
-  private static final int ERROR_PREVIEW_LIMIT = 300;
+  private static final int TEXT_PREVIEW_LIMIT = 200;
+  private static final int ERROR_PREVIEW_LIMIT = 200;
 
   private final BotConfiguration botConfiguration;
   private final UserInfoRepository userInfoRepository;
   private final RequestLogRepository requestLogRepository;
   private final UserService userService;
 
-  public String helpText() {
-    return """
+  public Screen menu() {
+    String text = """
         🛠 <b>Админка</b>
 
+        Разделы — кнопками ниже, навигация меняет это же сообщение.
+
+        <b>Команды:</b>
         /stats — общая статистика
-        /requests [N] — последние N запросов (по умолчанию 20)
+        /requests [стр.] — все запросы
+        /byusers [стр.] — запросы по пользователям
+        /errors [стр.] — ошибки
+        /users [стр.] — пользователи
         /find &lt;текст&gt; — поиск по запросам
-        /errors [N] — последние ошибки
-        /users [страница] — пользователи по последней активности
-        /user &lt;id|@username&gt; — карточка пользователя и его запросы
-        /ban &lt;id|@username&gt; — заблокировать
-        /unban &lt;id|@username&gt; — разблокировать
-        /send &lt;id|@username&gt; &lt;текст&gt; — написать пользователю от имени бота
+        /user &lt;id|@username&gt; — карточка пользователя
+        /ban, /unban &lt;id|@username&gt; — блокировка
+        /send &lt;id|@username&gt; &lt;текст&gt; — написать пользователю
         /broadcast &lt;текст&gt; — рассылка всем незаблокированным
-        /export — выгрузка пользователей и запросов в CSV""";
+        /export — выгрузка в CSV""";
+    return new Screen(text, markup(List.of(
+        List.of(button("📊 Статистика", "stats"), button("🕑 Запросы", "req:1")),
+        List.of(button("🗂 По пользователям", "grp:1"), button("👥 Пользователи", "users:1")),
+        List.of(button("❌ Ошибки", "err:1"), button("📁 Экспорт CSV", "export")))));
   }
 
   @Transactional(readOnly = true)
-  public String statsText() {
+  public Screen stats() {
     LocalDateTime now = LocalDateTime.now();
     LocalDateTime day = now.minusDays(1);
     LocalDateTime week = now.minusDays(7);
@@ -116,91 +139,134 @@ public class AdminService {
       text.append("\n🏆 <b>Топ пользователей за 30 дней:</b>\n");
       int place = 1;
       for (Object[] row : topUsers) {
-        UserInfo user = UserInfo.builder()
-            .telegramUserId((Long) row[0])
-            .username((String) row[1])
-            .firstName((String) row[2])
-            .lastName((String) row[3])
-            .build();
-        text.append("   ").append(place++).append(". ").append(userLink(user))
+        text.append("   ").append(place++).append(". ").append(userLink(userFromRow(row)))
             .append(" — ").append(row[4]).append('\n');
       }
     }
-    return text.toString();
+    return new Screen(text.toString(), markup(List.of(
+        List.of(button("🔄 Обновить", "stats"), button("🗂 По пользователям", "grp:1")),
+        backToMenu())));
   }
 
   @Transactional(readOnly = true)
-  public String recentRequestsText(int limit) {
-    Page<RequestLog> page = requestLogRepository.findAllByOrderByRequestedAtDesc(
-        PageRequest.of(0, limit));
-    return formatRequests("🕑 <b>Последние запросы</b>", page.getContent(), true);
+  public Screen requests(int pageNumber) {
+    Page<RequestLog> page = page(pageNumber, REQUESTS_PAGE_SIZE,
+        requestLogRepository::findAllByOrderByRequestedAtDesc);
+    return requestsScreen("🕑 <b>Все запросы</b> (" + page.getTotalElements() + ")", page, true,
+        "req:", List.of(button("🗂 Сгруппировать по пользователям", "grp:1")));
   }
 
   @Transactional(readOnly = true)
-  public String searchRequestsText(String query, int limit) {
-    Page<RequestLog> page = requestLogRepository.findByUrlContainingIgnoreCaseOrderByRequestedAtDesc(
-        query, PageRequest.of(0, limit));
-    return formatRequests("🔎 <b>Запросы с «" + Html.escape(query) + "»</b> (найдено "
-        + page.getTotalElements() + ")", page.getContent(), true);
+  public Screen errors(int pageNumber) {
+    Page<RequestLog> page = page(pageNumber, REQUESTS_PAGE_SIZE,
+        requestLogRepository::findByErrorMessageIsNotNullOrderByRequestedAtDesc);
+    return requestsScreen("❌ <b>Ошибки</b> (" + page.getTotalElements() + ")", page, true, "err:",
+        List.of());
+  }
+
+  /**
+   * Поиск по тексту запросов. Сам запрос слишком длинный для callback_data, поэтому маршрут
+   * пагинации передаётся снаружи.
+   */
+  @Transactional(readOnly = true)
+  public Screen search(String query, int pageNumber, String routePrefix) {
+    Page<RequestLog> page = page(pageNumber, REQUESTS_PAGE_SIZE, pageable ->
+        requestLogRepository.findByUrlContainingIgnoreCaseOrderByRequestedAtDesc(query, pageable));
+    return requestsScreen("🔎 <b>Запросы с «" + Html.escape(query) + "»</b> ("
+        + page.getTotalElements() + ")", page, true, routePrefix, List.of());
   }
 
   @Transactional(readOnly = true)
-  public String errorsText(int limit) {
-    Page<RequestLog> page = requestLogRepository.findByErrorMessageIsNotNullOrderByRequestedAtDesc(
-        PageRequest.of(0, limit));
-    return formatRequests("❌ <b>Последние ошибки</b> (всего " + page.getTotalElements() + ")",
-        page.getContent(), true);
+  public Screen groupedByUser(int pageNumber) {
+    Page<Object[]> page = page(pageNumber, USERS_PAGE_SIZE,
+        requestLogRepository::findGroupedByUser);
+    int first = page.getNumber() * USERS_PAGE_SIZE + 1;
+    List<String> items = new ArrayList<>();
+    List<String> routes = new ArrayList<>();
+    int number = first;
+    for (Object[] row : page.getContent()) {
+      UserInfo user = userFromRow(row);
+      items.add(number++ + ". " + userLink(user) + "\n"
+          + "   запросов: <b>" + row[4] + "</b> · ✅ " + row[5] + " · ❌ " + row[6]
+          + " · последний: " + formatDate((LocalDateTime) row[7]));
+      routes.add("ur:" + user.getTelegramUserId() + ":1");
+    }
+    String header = "🗂 <b>Запросы по пользователям</b> (пользователей: "
+        + page.getTotalElements() + ")\n<i>Номер — запросы пользователя</i>";
+    List<List<InlineKeyboardButton>> rows = new ArrayList<>(numbered(routes, first));
+    rows.add(pagination(page, "grp:"));
+    rows.add(List.of(button("🕑 Все запросы подряд", "req:1")));
+    rows.add(backToMenu());
+    return new Screen(fit(header, items, "Запросов пока нет"), markup(rows));
   }
 
   @Transactional(readOnly = true)
-  public String usersText(int pageNumber) {
-    Page<UserInfo> page = userInfoRepository.findAllByActivity(
-        PageRequest.of(Math.max(0, pageNumber - 1), USERS_PAGE_SIZE));
-    StringBuilder text = new StringBuilder("👥 <b>Пользователи</b> (всего ")
-        .append(page.getTotalElements()).append(")\n\n");
-    int index = page.getNumber() * USERS_PAGE_SIZE + 1;
+  public Screen users(int pageNumber) {
+    Page<UserInfo> page = page(pageNumber, USERS_PAGE_SIZE, userInfoRepository::findAllByActivity);
+    int first = page.getNumber() * USERS_PAGE_SIZE + 1;
+    List<String> items = new ArrayList<>();
+    List<String> routes = new ArrayList<>();
+    int number = first;
     for (UserInfo user : page.getContent()) {
-      text.append(index++).append(". ").append(userLink(user));
-      if (Boolean.TRUE.equals(user.getBanned())) {
-        text.append(" 🚫");
-      }
-      text.append('\n')
-          .append("   запросов: ").append(requestLogRepository.countByUserInfo(user))
-          .append(" · был: ").append(formatDate(user.getLastSeenAt()))
-          .append(" · ").append(user.getOutputFormat().getTitle()).append('/')
-          .append(user.getQuality().getTitle()).append('\n');
+      items.add(number++ + ". " + userLink(user)
+          + (Boolean.TRUE.equals(user.getBanned()) ? " 🚫" : "") + "\n"
+          + "   запросов: " + requestLogRepository.countByUserInfo(user)
+          + " · был: " + formatDate(user.getLastSeenAt())
+          + " · " + user.getOutputFormat().getTitle() + "/" + user.getQuality().getTitle());
+      routes.add("u:" + user.getTelegramUserId());
     }
-    if (page.getTotalPages() > 1) {
-      text.append("\nСтраница ").append(page.getNumber() + 1).append(" из ")
-          .append(page.getTotalPages());
-      if (page.hasNext()) {
-        text.append(". Дальше: /users ").append(page.getNumber() + 2);
-      }
-    }
-    return text.toString();
+    String header = "👥 <b>Пользователи</b> (" + page.getTotalElements() + ")\n"
+        + "<i>По последней активности. Номер — карточка пользователя</i>";
+    List<List<InlineKeyboardButton>> rows = new ArrayList<>(numbered(routes, first));
+    rows.add(pagination(page, "users:"));
+    rows.add(backToMenu());
+    return new Screen(fit(header, items, "Пользователей пока нет"), markup(rows));
   }
 
   @Transactional(readOnly = true)
-  public String userText(String idOrUsername, int requestsLimit) {
+  public Screen user(String idOrUsername) {
     Optional<UserInfo> found = userService.find(idOrUsername);
     if (found.isEmpty()) {
-      return "Пользователь «" + Html.escape(idOrUsername) + "» не найден";
+      return new Screen("Пользователь «" + Html.escape(idOrUsername) + "» не найден",
+          markup(List.of(List.of(button("👥 Пользователи", "users:1")), backToMenu())));
     }
     UserInfo user = found.get();
-    String header = "👤 " + userLink(user) + "\n"
-        + "ID: <code>" + user.getTelegramUserId() + "</code>\n"
+    long id = user.getTelegramUserId();
+    boolean banned = Boolean.TRUE.equals(user.getBanned());
+    String text = "👤 " + userLink(user) + "\n\n"
+        + "ID: <code>" + id + "</code>\n"
         + "Username: " + (user.getUsername() == null ? "—" : "@" + Html.escape(user.getUsername()))
         + "\n"
         + "Первый запуск: " + formatDate(user.getCreatedAt()) + "\n"
         + "Последняя активность: " + formatDate(user.getLastSeenAt()) + "\n"
         + "Настройки: " + user.getOutputFormat().getTitle() + " / " + user.getQuality().getTitle()
         + "\n"
-        + "Статус: " + (Boolean.TRUE.equals(user.getBanned()) ? "🚫 заблокирован" : "активен")
-        + "\n"
-        + "Всего запросов: " + requestLogRepository.countByUserInfo(user);
-    Page<RequestLog> requests = requestLogRepository.findByUserInfoOrderByRequestedAtDesc(user,
-        PageRequest.of(0, requestsLimit));
-    return formatRequests(header + "\n\n<b>Последние запросы:</b>", requests.getContent(), false);
+        + "Статус: " + (banned ? "🚫 заблокирован" : "активен") + "\n"
+        + "Всего запросов: " + requestLogRepository.countByUserInfo(user) + "\n\n"
+        + "Написать: <code>/send " + id + " текст</code>";
+    List<InlineKeyboardButton> actions = new ArrayList<>();
+    actions.add(button("📜 Запросы", "ur:" + id + ":1"));
+    if (!botConfiguration.isAdmin(id)) {
+      actions.add(banned ? button("✅ Разблокировать", "unban:" + id)
+          : button("🚫 Заблокировать", "ban:" + id));
+    }
+    return new Screen(text, markup(List.of(actions,
+        List.of(button("👥 Пользователи", "users:1"), button("🗂 По пользователям", "grp:1")),
+        backToMenu())));
+  }
+
+  @Transactional(readOnly = true)
+  public Screen userRequests(long telegramId, int pageNumber) {
+    Optional<UserInfo> found = userInfoRepository.findByTelegramUserId(telegramId);
+    if (found.isEmpty()) {
+      return user(String.valueOf(telegramId));
+    }
+    Page<RequestLog> page = page(pageNumber, REQUESTS_PAGE_SIZE, pageable ->
+        requestLogRepository.findByUserInfoOrderByRequestedAtDesc(found.get(), pageable));
+    return requestsScreen("📜 <b>Запросы</b> " + userLink(found.get()) + " ("
+            + page.getTotalElements() + ")", page, false, "ur:" + telegramId + ":",
+        List.of(button("👤 Карточка", "u:" + telegramId),
+            button("🗂 По пользователям", "grp:1")));
   }
 
   @Transactional(readOnly = true)
@@ -249,13 +315,48 @@ public class AdminService {
     return csv.toString().getBytes(StandardCharsets.UTF_8);
   }
 
-  private String formatRequests(String title, List<RequestLog> requests, boolean withUser) {
-    if (requests.isEmpty()) {
-      return title + "\n\nНичего не найдено";
+  /**
+   * Загружает страницу (нумерация с 1); если такой уже нет — например, данные удалились, —
+   * последнюю существующую.
+   */
+  private static <T> Page<T> page(int pageNumber, int size, Function<Pageable, Page<T>> query) {
+    Page<T> page = query.apply(PageRequest.of(Math.max(0, pageNumber - 1), size));
+    if (page.getContent().isEmpty() && page.getTotalPages() > 0
+        && page.getNumber() >= page.getTotalPages()) {
+      page = query.apply(PageRequest.of(page.getTotalPages() - 1, size));
     }
-    return title + "\n\n" + requests.stream()
-        .map(request -> formatRequest(request, withUser))
-        .collect(Collectors.joining("\n\n"));
+    return page;
+  }
+
+  private Screen requestsScreen(String header, Page<RequestLog> page, boolean withUser,
+      String routePrefix, List<InlineKeyboardButton> extraButtons) {
+    Function<RequestLog, String> formatter = request -> formatRequest(request, withUser);
+    List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+    rows.add(pagination(page, routePrefix));
+    for (InlineKeyboardButton extra : extraButtons) {
+      rows.add(List.of(extra));
+    }
+    rows.add(backToMenu());
+    return new Screen(fit(header, page.getContent().stream().map(formatter).toList(),
+        "Ничего не найдено"), markup(rows));
+  }
+
+  /**
+   * Склеивает элементы страницы, отбрасывая хвост, если текст не влезает в одно сообщение.
+   */
+  private String fit(String header, List<String> items, String emptyText) {
+    if (items.isEmpty()) {
+      return header + "\n\n" + emptyText;
+    }
+    StringBuilder text = new StringBuilder(header);
+    for (String item : items) {
+      if (text.length() + item.length() + 2 > SCREEN_TEXT_LIMIT) {
+        text.append("\n\n…");
+        break;
+      }
+      text.append("\n\n").append(item);
+    }
+    return text.toString();
   }
 
   private String formatRequest(RequestLog request, boolean withUser) {
@@ -286,6 +387,15 @@ public class AdminService {
           request.getErrorMessage().replace('\n', ' '), ERROR_PREVIEW_LIMIT))).append("</i>");
     }
     return line.toString();
+  }
+
+  private static UserInfo userFromRow(Object[] row) {
+    return UserInfo.builder()
+        .telegramUserId((Long) row[0])
+        .username((String) row[1])
+        .firstName((String) row[2])
+        .lastName((String) row[3])
+        .build();
   }
 
   private String userLink(UserInfo user) {
