@@ -9,10 +9,15 @@ import lombok.RequiredArgsConstructor;
 @Getter
 @RequiredArgsConstructor
 public enum MusicProvider {
-  YANDEX("Яндекс Музыка", "🟡"),
-  SOUNDCLOUD("SoundCloud", "🟠");
+  YANDEX("Яндекс Музыка", "Яндекс", "🟡"),
+  SOUNDCLOUD("SoundCloud", "SoundCloud", "🟠"),
+  YOUTUBE_MUSIC("YouTube Music", "YT Music", "🔴");
 
   private final String title;
+  /**
+   * Короткое название для кнопок.
+   */
+  private final String shortTitle;
   private final String emoji;
 
   public static MusicProvider parse(String value) {

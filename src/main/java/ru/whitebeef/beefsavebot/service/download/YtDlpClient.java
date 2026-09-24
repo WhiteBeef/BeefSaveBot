@@ -75,7 +75,15 @@ public class YtDlpClient {
    * Результаты не раскрываются полностью ({@code --flat-playlist}), поэтому поиск быстрый.
    */
   public List<JsonNode> search(String searchQuery) throws IOException, InterruptedException {
-    Process process = new ProcessBuilder("yt-dlp", "--flat-playlist", "-j", searchQuery)
+    return search(searchQuery, List.of());
+  }
+
+  public List<JsonNode> search(String searchQuery, List<String> extraArgs)
+      throws IOException, InterruptedException {
+    List<String> command = new ArrayList<>(List.of("yt-dlp", "--flat-playlist", "-j"));
+    command.addAll(extraArgs);
+    command.add(searchQuery);
+    Process process = new ProcessBuilder(command)
         .redirectError(ProcessBuilder.Redirect.DISCARD)
         .start();
     String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);

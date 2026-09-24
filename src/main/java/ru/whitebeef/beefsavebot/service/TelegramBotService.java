@@ -523,7 +523,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         + "<b>Откуда умею скачивать:</b>\n"
         + Html.escape(videoDownloadService.getSupportedSites()) + "\n\n"
         + "<b>Что ещё умею:</b>\n"
-        + "🎵 Искать треки в Яндекс Музыке и SoundCloud — просто напиши название песни "
+        + "🎵 Искать треки в Яндекс Музыке, SoundCloud и YouTube Music — просто напиши "
+        + "название песни "
         + "(где искать сначала — в /settings)\n"
         + "⚙️ Присылать файл в нужном формате (MP4, MP3, WEBM, WEBP) и качестве — /settings\n"
         + "✂️ Вырезать фрагмент видео с точностью до кадра — /crop\n"
@@ -580,7 +581,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
     for (MusicProvider provider : musicSearchService.availableProviders()) {
       musicRow.add(InlineKeyboardButton.builder()
           .text((provider == userInfo.getMusicProvider() ? "✅ " : provider.getEmoji() + " ")
-              + provider.getTitle())
+              + provider.getShortTitle())
           .callbackData(MUSIC_PROVIDER_CALLBACK_PREFIX + provider.name())
           .build());
     }

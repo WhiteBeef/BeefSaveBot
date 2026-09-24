@@ -50,6 +50,8 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
 
   @Query(value = """
       SELECT CASE
+               WHEN url ILIKE '%music.youtube%' OR url LIKE 'YouTube Music:%'
+                 THEN 'YouTube Music'
                WHEN url ILIKE '%youtu%' THEN 'YouTube'
                WHEN url ILIKE '%tiktok.com%' THEN 'TikTok'
                WHEN url ILIKE '%instagram.com%' THEN 'Instagram'
