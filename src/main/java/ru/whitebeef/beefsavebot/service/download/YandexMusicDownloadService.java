@@ -2,9 +2,6 @@ package ru.whitebeef.beefsavebot.service.download;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.mpatric.mp3agic.ID3v2;
-import com.mpatric.mp3agic.ID3v24Tag;
-import com.mpatric.mp3agic.Mp3File;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -15,12 +12,14 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.StreamSupport;
@@ -161,7 +160,7 @@ public class YandexMusicDownloadService implements DownloadService {
     }
   }
 
-  private record TrackMeta(String artist, String title) {
+  record TrackMeta(String artist, String title, String album) {
     String fileNameBase() {
       String name = artist == null || artist.isBlank() ? title : artist + " - " + title;
       return sanitizeFileName(name);
@@ -201,27 +200,42 @@ public class YandexMusicDownloadService implements DownloadService {
         log.warn("В ответе метаданных трека {} нет title: {}", trackId, response.body());
         return null;
       }
-      return new TrackMeta(artists, title);
+      String album = track.path("albums").path(0).path("title").asText(null);
+      return new TrackMeta(artists, title, album);
     } catch (Exception e) {
       log.warn("Не удалось получить метаданные трека {}: {}", trackId, e.getMessage());
       return null;
     }
   }
 
-  private void writeId3Tags(File file, TrackMeta meta) {
+  /**
+   * Пишет теги через ffmpeg в ID3v2.3 (его понимают все плееры и Telegram) и дублирует в ID3v1.
+   */
+  void writeId3Tags(File file, TrackMeta meta) {
+    File tagged = new File(file.getParentFile(), "tagged_" + file.getName());
     try {
-      Mp3File mp3File = new Mp3File(file);
-      ID3v2 tag = new ID3v24Tag();
-      tag.setTitle(meta.title());
+      List<String> command = new ArrayList<>(List.of("ffmpeg", "-hide_banner", "-loglevel",
+          "error", "-y", "-i", file.getAbsolutePath(), "-map", "0:a", "-c", "copy",
+          "-map_metadata", "-1", "-id3v2_version", "3", "-write_id3v1", "1",
+          "-metadata", "title=" + meta.title()));
       if (meta.artist() != null && !meta.artist().isBlank()) {
-        tag.setArtist(meta.artist());
+        command.addAll(List.of("-metadata", "artist=" + meta.artist()));
       }
-      mp3File.setId3v2Tag(tag);
-      File tagged = new File(file.getParentFile(), file.getName() + ".tagged");
-      mp3File.save(tagged.getAbsolutePath());
-      Files.move(tagged.toPath(), file.toPath(),
-          java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+      if (meta.album() != null && !meta.album().isBlank()) {
+        command.addAll(List.of("-metadata", "album=" + meta.album()));
+      }
+      command.add(tagged.getAbsolutePath());
+      Process process = new ProcessBuilder(command).inheritIO().start();
+      if (!process.waitFor(1, TimeUnit.MINUTES)) {
+        process.destroyForcibly();
+        throw new IOException("ffmpeg не успел записать теги");
+      }
+      if (process.exitValue() != 0 || tagged.length() == 0) {
+        throw new IOException("ffmpeg завершился с кодом " + process.exitValue());
+      }
+      Files.move(tagged.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
     } catch (Exception e) {
+      tagged.delete();
       log.warn("Не удалось записать ID3-теги трека {} - {}: {}", meta.artist(), meta.title(),
           e.getMessage());
     }

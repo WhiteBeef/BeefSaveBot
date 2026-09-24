@@ -601,10 +601,16 @@ public class TelegramBotService extends TelegramLongPollingBot {
     }
     InputFile inputFile = new InputFile(file);
     switch (format) {
-      case MP3 -> execute(SendAudio.builder()
-          .chatId(chatId.toString())
-          .audio(inputFile)
-          .build());
+      case MP3 -> {
+        // Передаём исполнителя и название явно: так Telegram покажет их даже при кривых тегах
+        MediaProcessingService.AudioTags tags = mediaProcessingService.readAudioTags(file);
+        execute(SendAudio.builder()
+            .chatId(chatId.toString())
+            .audio(inputFile)
+            .performer(tags.performer())
+            .title(tags.title())
+            .build());
+      }
       case MP4 -> execute(SendVideo.builder()
           .chatId(chatId.toString())
           .video(inputFile)

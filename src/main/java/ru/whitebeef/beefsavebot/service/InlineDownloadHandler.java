@@ -233,8 +233,12 @@ public class InlineDownloadHandler {
     Message message = switch (format) {
       case MP4 -> bot.execute(SendVideo.builder().chatId(chatId).video(inputFile)
           .supportsStreaming(true).disableNotification(true).build());
-      case MP3 -> bot.execute(SendAudio.builder().chatId(chatId).audio(inputFile)
-          .disableNotification(true).build());
+      case MP3 -> {
+        MediaProcessingService.AudioTags tags = mediaProcessingService.readAudioTags(file);
+        yield bot.execute(SendAudio.builder().chatId(chatId).audio(inputFile)
+            .performer(tags.performer()).title(tags.title())
+            .disableNotification(true).build());
+      }
       case WEBM, WEBP -> bot.execute(SendDocument.builder().chatId(chatId).document(inputFile)
           .disableNotification(true).build());
     };
