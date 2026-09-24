@@ -2,6 +2,7 @@ package ru.whitebeef.beefsavebot.service.music;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -10,6 +11,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import ru.whitebeef.beefsavebot.model.MusicProvider;
 import ru.whitebeef.beefsavebot.model.Quality;
+import ru.whitebeef.beefsavebot.service.download.DrmProtectedException;
 import ru.whitebeef.beefsavebot.service.download.SoundCloudDownloadService;
 
 class MusicSearchServiceTest {
@@ -112,10 +114,76 @@ class MusicSearchServiceTest {
 
   @Test
   void recognizesSoundCloudLinks() {
-    SoundCloudDownloadService service = new SoundCloudDownloadService(null);
+    SoundCloudDownloadService service = new SoundCloudDownloadService(null, null);
     assertTrue(service.canDownloadVideo("https://soundcloud.com/artist/track"));
     assertTrue(service.canDownloadVideo("https://on.soundcloud.com/AbCdEf"));
     assertTrue(service.canDownloadVideo("https://m.soundcloud.com/artist/track?si=1"));
     assertFalse(service.canDownloadVideo("https://youtube.com/watch?v=x"));
+  }
+
+  private static MusicSearchProvider drmProvider(MusicProvider id) {
+    return new MusicSearchProvider() {
+      @Override
+      public MusicProvider provider() {
+        return id;
+      }
+
+      @Override
+      public List<TrackResult> search(String query, int limit) {
+        return List.of();
+      }
+
+      @Override
+      public File download(TrackResult track, Quality quality) {
+        throw new DrmProtectedException();
+      }
+    };
+  }
+
+  @Test
+  void drmProtectedTrackIsReplacedFromAnotherProvider() {
+    File yandexFile = new File("Artist - Song.mp3");
+    MusicSearchProvider yandex = new MusicSearchProvider() {
+      @Override
+      public MusicProvider provider() {
+        return MusicProvider.YANDEX;
+      }
+
+      @Override
+      public List<TrackResult> search(String query, int limit) {
+        assertEquals("Artist - Song", query);
+        return List.of(new TrackResult(MusicProvider.YANDEX, "42", "Artist", "Song"));
+      }
+
+      @Override
+      public File download(TrackResult track, Quality quality) {
+        return yandexFile;
+      }
+    };
+    MusicSearchService service = new MusicSearchService(List.of(yandex,
+        drmProvider(MusicProvider.SOUNDCLOUD)));
+
+    File result = service.download(new TrackResult(MusicProvider.SOUNDCLOUD,
+        "https://soundcloud.com/a/song", "Artist", "Song"), Quality.HIGH);
+    assertEquals(yandexFile, result);
+  }
+
+  @Test
+  void drmErrorIsRethrownWhenNoReplacement() {
+    MusicSearchService service = new MusicSearchService(List.of(
+        drmProvider(MusicProvider.SOUNDCLOUD),
+        provider(MusicProvider.YANDEX, true, List.of())));
+    assertThrows(DrmProtectedException.class, () -> service.download(new TrackResult(
+        MusicProvider.SOUNDCLOUD, "https://soundcloud.com/a/song", "Artist", "Song"),
+        Quality.HIGH));
+  }
+
+  @Test
+  void trackNameFromOembed() throws Exception {
+    ObjectMapper mapper = new ObjectMapper();
+    assertEquals("Artist Song", SoundCloudDownloadService.nameFromOembed(mapper.readTree(
+        "{\"title\": \"Song by Artist\", \"author_name\": \"Artist\"}")));
+    assertEquals("Uploader Other title", SoundCloudDownloadService.nameFromOembed(
+        mapper.readTree("{\"title\": \"Other title\", \"author_name\": \"Uploader\"}")));
   }
 }

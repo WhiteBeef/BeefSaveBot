@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import ru.whitebeef.beefsavebot.model.MusicProvider;
 import ru.whitebeef.beefsavebot.model.Quality;
+import ru.whitebeef.beefsavebot.service.download.DrmProtectedException;
 import ru.whitebeef.beefsavebot.service.media.UserFacingException;
 
 /**
@@ -100,12 +101,48 @@ public class MusicSearchService {
     return results;
   }
 
+  /**
+   * Скачивает трек. Если он защищён DRM, ищет тот же трек у других поставщиков.
+   */
   public File download(TrackResult track, Quality quality) {
     MusicSearchProvider provider = providers.get(track.provider());
     if (provider == null) {
       throw new UserFacingException("Поставщик " + track.provider().getTitle() + " недоступен");
     }
-    return provider.download(track, quality);
+    try {
+      return provider.download(track, quality);
+    } catch (DrmProtectedException e) {
+      File replacement = downloadFromOtherProviders(track.display(), track.provider(), quality);
+      if (replacement == null) {
+        throw e;
+      }
+      return replacement;
+    }
+  }
+
+  /**
+   * Ищет трек по названию у всех доступных поставщиков, кроме {@code exclude}, и скачивает
+   * первый найденный. {@code null}, если нигде не нашлось или не скачалось.
+   */
+  public File downloadFromOtherProviders(String query, MusicProvider exclude, Quality quality) {
+    for (MusicProvider other : availableProviders()) {
+      if (other == exclude) {
+        continue;
+      }
+      MusicSearchProvider provider = providers.get(other);
+      List<TrackResult> found = provider.search(query, 1);
+      if (found.isEmpty()) {
+        continue;
+      }
+      try {
+        log.info("«{}» недоступен в {}, скачиваю из {}: {}", query, exclude, other,
+            found.getFirst().display());
+        return provider.download(found.getFirst(), quality);
+      } catch (Exception e) {
+        log.warn("Замена «{}» из {} не удалась: {}", query, other, e.getMessage());
+      }
+    }
+    return null;
   }
 
   public String rememberTrack(TrackResult track) {

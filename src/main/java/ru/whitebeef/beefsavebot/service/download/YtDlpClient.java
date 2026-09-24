@@ -55,6 +55,10 @@ public class YtDlpClient {
     }
     stderrReader.join();
     if (process.exitValue() != 0) {
+      if (stderr.indexOf("DRM protected") >= 0) {
+        log.warn("Трек защищён DRM: {}", url);
+        throw new DrmProtectedException();
+      }
       if (stderr.indexOf("Unsupported URL") >= 0) {
         log.warn("yt-dlp не поддерживает ссылку {}", url);
         throw new UnsupportedUrlException();
