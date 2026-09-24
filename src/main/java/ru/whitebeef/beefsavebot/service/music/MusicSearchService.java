@@ -70,7 +70,7 @@ public class MusicSearchService {
     List<MusicProvider> others = availableProviders().stream()
         .filter(provider -> provider != preferred)
         .toList();
-    return new SearchResults(searchAll(query, others), false, others);
+    return new SearchResults(searchAll(query, others, RESULTS_PER_PROVIDER), false, others);
   }
 
   /**
@@ -81,13 +81,14 @@ public class MusicSearchService {
     if (order.remove(preferred)) {
       order.addFirst(preferred);
     }
-    return searchAll(query, order);
+    return searchAll(query, order, RESULTS_PER_PROVIDER);
   }
 
-  private List<TrackResult> searchAll(String query, List<MusicProvider> order) {
+  private List<TrackResult> searchAll(String query, List<MusicProvider> order, int limit) {
     List<CompletableFuture<List<TrackResult>>> futures = order.stream()
         .map(provider -> CompletableFuture.supplyAsync(
-            () -> providers.get(provider).search(query, RESULTS_PER_PROVIDER), executor))
+            () -> providers.get(provider).search(query, limit).stream().limit(limit).toList(),
+            executor))
         .toList();
     List<TrackResult> results = new ArrayList<>();
     for (int i = 0; i < futures.size(); i++) {
@@ -106,6 +107,17 @@ public class MusicSearchService {
       throw new UserFacingException("Поставщик " + track.provider().getTitle() + " недоступен");
     }
     return provider.download(track, quality);
+  }
+
+  /**
+   * Тот же трек у других поставщиков: по лучшему совпадению от каждого, чтобы предложить
+   * пользователю выбор, если скачать из {@code failed} не получилось.
+   */
+  public List<TrackResult> findAlternatives(String query, MusicProvider failed) {
+    List<MusicProvider> others = availableProviders().stream()
+        .filter(provider -> provider != failed)
+        .toList();
+    return searchAll(query, others, 1);
   }
 
   public String rememberTrack(TrackResult track) {

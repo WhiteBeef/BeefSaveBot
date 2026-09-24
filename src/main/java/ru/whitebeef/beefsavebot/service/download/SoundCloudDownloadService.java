@@ -1,21 +1,22 @@
 package ru.whitebeef.beefsavebot.service.download;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.File;
-import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
-import java.util.UUID;
 import java.util.regex.Pattern;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import ru.whitebeef.beefsavebot.dto.DownloadOptions;
+import ru.whitebeef.beefsavebot.model.MusicProvider;
 import ru.whitebeef.beefsavebot.model.Quality;
-import ru.whitebeef.beefsavebot.service.media.UserFacingException;
 
 /**
  * Треки SoundCloud через yt-dlp: сразу в MP3 с исполнителем и названием в тегах.
@@ -27,41 +28,63 @@ public class SoundCloudDownloadService implements DownloadService {
   private static final Pattern URL_PATTERN = Pattern.compile(
       "^(?:https?://)?(?:www\\.|m\\.|on\\.)?soundcloud\\.(?:com|app\\.goo\\.gl)/\\S+$");
 
-  private final YtDlpClient ytDlpClient;
+  private final YtDlpAudioDownloader audioDownloader;
   private final HttpClient httpClient = HttpClient.newBuilder()
       .followRedirects(HttpClient.Redirect.NORMAL)
       .connectTimeout(Duration.ofSeconds(10))
       .build();
 
-  public SoundCloudDownloadService(YtDlpClient ytDlpClient) {
-    this.ytDlpClient = ytDlpClient;
+  public SoundCloudDownloadService(YtDlpAudioDownloader audioDownloader) {
+    this.audioDownloader = audioDownloader;
   }
 
+  /**
+   * Прямая ссылка на трек. Если он защищён DRM, узнаём название через oEmbed SoundCloud, чтобы
+   * бот мог предложить скачать тот же трек из других сервисов.
+   */
   @Override
   public File downloadVideo(String url, DownloadOptions options) {
-    return downloadTrack(url, options.quality());
+    try {
+      return downloadTrack(url, options.quality());
+    } catch (DrmProtectedException e) {
+      throw new DrmProtectedException(trackName(resolveShortLink(url)), MusicProvider.SOUNDCLOUD);
+    }
+  }
+
+  /**
+   * «Исполнитель Название» через официальный oEmbed: он работает и для треков с DRM.
+   */
+  String trackName(String url) {
+    try {
+      HttpResponse<String> response = httpClient.send(HttpRequest.newBuilder(URI.create(
+              "https://soundcloud.com/oembed?format=json&url="
+                  + URLEncoder.encode(url, StandardCharsets.UTF_8)))
+          .timeout(Duration.ofSeconds(15)).GET().build(), HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200) {
+        return null;
+      }
+      return nameFromOembed(new ObjectMapper().readTree(response.body()));
+    } catch (Exception e) {
+      log.debug("Не удалось получить название трека {}: {}", url, e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * В oEmbed title имеет вид «Название by Исполнитель».
+   */
+  public static String nameFromOembed(JsonNode oembed) {
+    String title = oembed.path("title").asText("");
+    String author = oembed.path("author_name").asText("");
+    if (!author.isBlank() && title.endsWith(" by " + author)) {
+      title = title.substring(0, title.length() - author.length() - 4);
+    }
+    String name = (author + " " + title).trim();
+    return name.isBlank() ? null : name;
   }
 
   public File downloadTrack(String url, Quality quality) {
-    String trackUrl = resolveShortLink(url);
-    try {
-      JsonNode metadata = ytDlpClient.fetchMetadata(trackUrl, List.of());
-      String artist = firstText(metadata, "artist", "uploader", "creator");
-      String title = metadata.path("title").asText("");
-      String fileName = YtDlpClient.sanitizeFileName(
-          artist == null || title.toLowerCase().contains(artist.toLowerCase()) ? title
-              : artist + " - " + title,
-          "soundcloud_" + UUID.randomUUID());
-      File file = ytDlpClient.download(trackUrl, "bestaudio/best", null, List.of(
-          "-x", "--audio-format", "mp3", "--audio-quality", quality.getAudioKbps() + "K",
-          "--embed-metadata"), fileName);
-      if (file == null) {
-        throw new UserFacingException("Не удалось скачать трек с SoundCloud");
-      }
-      return file;
-    } catch (IOException | InterruptedException e) {
-      throw new RuntimeException("Ошибка загрузки SoundCloud: " + e.getMessage(), e);
-    }
+    return audioDownloader.downloadMp3(resolveShortLink(url), quality, "SoundCloud");
   }
 
   /**
@@ -79,16 +102,6 @@ public class SoundCloudDownloadService implements DownloadService {
       log.debug("Не удалось раскрыть ссылку {}: {}", url, e.getMessage());
       return url;
     }
-  }
-
-  private static String firstText(JsonNode node, String... fields) {
-    for (String field : fields) {
-      String value = node.path(field).asText("");
-      if (!value.isBlank()) {
-        return value;
-      }
-    }
-    return null;
   }
 
   @Override

@@ -68,6 +68,7 @@ import ru.whitebeef.beefsavebot.service.convert.ConversionResult;
 import ru.whitebeef.beefsavebot.service.convert.ConversionService;
 import ru.whitebeef.beefsavebot.service.convert.ConversionSession;
 import ru.whitebeef.beefsavebot.service.convert.Formats;
+import ru.whitebeef.beefsavebot.service.download.DrmProtectedException;
 import ru.whitebeef.beefsavebot.service.download.MediaType;
 import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 import ru.whitebeef.beefsavebot.service.download.YandexMusicDownloadService;
@@ -523,7 +524,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         + "<b>Откуда умею скачивать:</b>\n"
         + Html.escape(videoDownloadService.getSupportedSites()) + "\n\n"
         + "<b>Что ещё умею:</b>\n"
-        + "🎵 Искать треки в Яндекс Музыке и SoundCloud — просто напиши название песни "
+        + "🎵 Искать треки в Яндекс Музыке, SoundCloud и YouTube Music — просто напиши "
+        + "название песни "
         + "(где искать сначала — в /settings)\n"
         + "⚙️ Присылать файл в нужном формате (MP4, MP3, WEBM, WEBP) и качестве — /settings\n"
         + "✂️ Вырезать фрагмент видео с точностью до кадра — /crop\n"
@@ -580,7 +582,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
     for (MusicProvider provider : musicSearchService.availableProviders()) {
       musicRow.add(InlineKeyboardButton.builder()
           .text((provider == userInfo.getMusicProvider() ? "✅ " : provider.getEmoji() + " ")
-              + provider.getTitle())
+              + provider.getShortTitle())
           .callbackData(MUSIC_PROVIDER_CALLBACK_PREFIX + provider.name())
           .build());
     }
@@ -709,7 +711,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
     DownloadOptions options = new DownloadOptions(quality, format.isAudioOnly(),
         crop != null || format.isAudioOnly() ? downloadConfiguration.getSourceMaxBytes()
             : downloadConfiguration.getMaxBytes());
-    processAndSend(chatId, replyTo, requestLog, mediaType, format, quality, crop,
+    processAndSend(chatId, replyTo, requestLog, mediaType, format, quality, crop, null,
         () -> videoDownloadService.downloadVideo(url, options));
   }
 
@@ -718,12 +720,22 @@ public class TelegramBotService extends TelegramLongPollingBot {
     RequestLog requestLog = requestService.saveRequest(userInfo, RequestType.TRACK,
         "yandex-music-search:" + trackId, quality, OutputFormat.MP3);
     processAndSend(chatId, null, requestLog, MediaType.AUDIO, OutputFormat.MP3, quality, null,
-        () -> yandexMusicDownloadService.downloadTrackById(trackId, quality));
+        null, () -> yandexMusicDownloadService.downloadTrackById(trackId, quality));
   }
 
+  /**
+   * Трек, который при неудаче можно поискать в других сервисах.
+   */
+  private record MusicFallback(String query, MusicProvider provider) {
+
+  }
+
+  /**
+   * @param fallback для музыки: что искать в других сервисах, если скачать не получилось
+   */
   private void processAndSend(Long chatId, Integer replyTo, RequestLog requestLog,
-      MediaType mediaType,
-      OutputFormat format, Quality quality, CropRange crop, Downloader downloader) {
+      MediaType mediaType, OutputFormat format, Quality quality, CropRange crop,
+      MusicFallback fallback, Downloader downloader) {
     File source = null;
     File result = null;
     try {
@@ -740,15 +752,15 @@ public class TelegramBotService extends TelegramLongPollingBot {
     } catch (UserFacingException e) {
       log.warn("Запрос {} не выполнен: {}", requestLog.getUrl(), e.getMessage());
       requestService.markFailed(requestLog, e.getMessage());
-      try {
-        sendText(chatId, "⚠️ " + e.getMessage());
-      } catch (TelegramApiException ex) {
-        log.error("Ошибка при отправке сообщения: {}", ex.getMessage());
+      if (!offerAlternatives(chatId, e, fallback)) {
+        trySendText(chatId, "⚠️ " + e.getMessage());
       }
     } catch (Exception e) {
       log.error("Ошибка при обработке {}: {}", requestLog.getUrl(), e.getMessage(), e);
       requestService.markFailed(requestLog, rootMessage(e));
-      sendError(chatId);
+      if (!offerAlternatives(chatId, e, fallback)) {
+        sendError(chatId);
+      }
     } finally {
       cleanup(result);
       if (source != result) {
@@ -761,6 +773,49 @@ public class TelegramBotService extends TelegramLongPollingBot {
    * Текст без ссылки ищем как название трека: сначала у выбранного поставщика музыки, а если
    * там пусто — у всех остальных.
    */
+  /**
+   * Трек не скачался из одного сервиса — ищем его в остальных и даём выбрать, откуда скачать.
+   *
+   * @return {@code true}, если варианты нашлись и сообщение с ними отправлено
+   */
+  private boolean offerAlternatives(Long chatId, Exception error, MusicFallback fallback) {
+    MusicFallback source = fallback;
+    if (source == null && error instanceof DrmProtectedException drm
+        && drm.getTrackName() != null) {
+      source = new MusicFallback(drm.getTrackName(), drm.getProvider());
+    }
+    if (source == null) {
+      return false;
+    }
+    try {
+      List<TrackResult> alternatives = musicSearchService.findAlternatives(source.query(),
+          source.provider());
+      if (alternatives.isEmpty()) {
+        return false;
+      }
+      String reason = error instanceof UserFacingException ? error.getMessage()
+          : "Не получилось скачать трек из "
+              + (source.provider() == null ? "этого сервиса" : source.provider().getTitle());
+      List<List<InlineKeyboardButton>> keyboard = alternatives.stream()
+          .map(track -> List.of(InlineKeyboardButton.builder()
+              .text(truncate(track.provider().getEmoji() + " " + track.provider().getShortTitle()
+                  + ": " + track.display()))
+              .callbackData(MUSIC_TRACK_CALLBACK_PREFIX + musicSearchService.rememberTrack(track))
+              .build()))
+          .toList();
+      execute(SendMessage.builder()
+          .chatId(chatId.toString())
+          .text("⚠️ " + reason + "\n\nНашёл этот трек в других сервисах — откуда скачать?")
+          .replyMarkup(InlineKeyboardMarkup.builder().keyboard(keyboard).build())
+          .build());
+      return true;
+    } catch (Exception e) {
+      log.warn("Не удалось предложить другие источники для «{}»: {}", source.query(),
+          e.getMessage());
+      return false;
+    }
+  }
+
   private void offerSearchResults(Long chatId, UserInfo userInfo, String query)
       throws TelegramApiException {
     MusicProvider preferred = userInfo.getMusicProvider();
@@ -839,6 +894,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
     RequestLog requestLog = requestService.saveRequest(userInfo, RequestType.TRACK,
         track.provider().getTitle() + ": " + track.display(), quality, OutputFormat.MP3);
     processAndSend(chatId, null, requestLog, MediaType.AUDIO, OutputFormat.MP3, quality, null,
+        new MusicFallback(track.display(), track.provider()),
         () -> musicSearchService.download(track, quality));
   }
 

@@ -10,6 +10,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import ru.whitebeef.beefsavebot.model.MusicProvider;
 import ru.whitebeef.beefsavebot.model.Quality;
+import ru.whitebeef.beefsavebot.service.download.DrmProtectedException;
 import ru.whitebeef.beefsavebot.service.download.SoundCloudDownloadService;
 
 class MusicSearchServiceTest {
@@ -117,5 +118,41 @@ class MusicSearchServiceTest {
     assertTrue(service.canDownloadVideo("https://on.soundcloud.com/AbCdEf"));
     assertTrue(service.canDownloadVideo("https://m.soundcloud.com/artist/track?si=1"));
     assertFalse(service.canDownloadVideo("https://youtube.com/watch?v=x"));
+  }
+
+  @Test
+  void findsOneAlternativePerOtherProvider() {
+    MusicSearchService service = new MusicSearchService(List.of(
+        provider(MusicProvider.SOUNDCLOUD, true, List.of("s1")),
+        provider(MusicProvider.YANDEX, true, List.of("y1", "y2")),
+        provider(MusicProvider.YOUTUBE_MUSIC, true, List.of("m1", "m2"))));
+
+    List<TrackResult> alternatives = service.findAlternatives("Artist - Song",
+        MusicProvider.SOUNDCLOUD);
+    assertEquals(List.of("y1", "m1"), alternatives.stream().map(TrackResult::id).toList());
+  }
+
+  @Test
+  void noAlternativesWhenNothingElseAvailable() {
+    MusicSearchService service = new MusicSearchService(List.of(
+        provider(MusicProvider.SOUNDCLOUD, true, List.of("s1")),
+        provider(MusicProvider.YANDEX, false, List.of("y1"))));
+    assertTrue(service.findAlternatives("q", MusicProvider.SOUNDCLOUD).isEmpty());
+  }
+
+  @Test
+  void drmExceptionKeepsTrackNameForAlternatives() {
+    DrmProtectedException e = new DrmProtectedException("Artist Song", MusicProvider.SOUNDCLOUD);
+    assertEquals("Artist Song", e.getTrackName());
+    assertTrue(e.getMessage().contains("SoundCloud"));
+  }
+
+  @Test
+  void trackNameFromOembed() throws Exception {
+    ObjectMapper mapper = new ObjectMapper();
+    assertEquals("Artist Song", SoundCloudDownloadService.nameFromOembed(mapper.readTree(
+        "{\"title\": \"Song by Artist\", \"author_name\": \"Artist\"}")));
+    assertEquals("Uploader Other title", SoundCloudDownloadService.nameFromOembed(
+        mapper.readTree("{\"title\": \"Other title\", \"author_name\": \"Uploader\"}")));
   }
 }
