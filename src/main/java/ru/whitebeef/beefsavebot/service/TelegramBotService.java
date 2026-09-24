@@ -6,10 +6,14 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import lombok.RequiredArgsConstructor;
@@ -84,6 +88,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private static final String FORMAT_CALLBACK_PREFIX = "set:f:";
   private static final int BUTTON_TEXT_LIMIT = 64;
   private static final int MESSAGE_LIMIT = 4000;
+  private static final Duration LAST_LINK_TTL = Duration.ofHours(6);
   /**
    * Ограничение Bot API на отправку файлов.
    */
@@ -104,6 +109,10 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private final AdminPanel adminPanel;
   private final ConversionService conversionService;
   private final InlineDownloadHandler inlineDownloadHandler;
+  /**
+   * Последняя ссылка на видео в каждом групповом чате.
+   */
+  private final Map<Long, LastLink> lastLinks = new ConcurrentHashMap<>();
   private final ExecutorService executorService = Executors.newFixedThreadPool(10);
 
   @PostConstruct
@@ -215,9 +224,10 @@ public class TelegramBotService extends TelegramLongPollingBot {
         return;
       }
       LinkRequest link = parseLink(chatId, text);
-      if (link == null && message.getReplyToMessage() != null) {
+      String replySource = replySource(message);
+      if (link == null && replySource != null) {
         // Ответ на сообщение со ссылкой: в тексте могут быть только таймкоды
-        link = linkFromReply(chatId, message.getReplyToMessage(), text);
+        link = linkFromSource(chatId, replySource, text);
       }
       if (link != null) {
         handleDownload(chatId, userInfo, link.url(), link.crop(), null);
@@ -240,15 +250,17 @@ public class TelegramBotService extends TelegramLongPollingBot {
    */
   private void handleGroupMessage(Long chatId, UserInfo userInfo, Message message, String text)
       throws TelegramApiException {
+    rememberLink(chatId, message);
     String mention = "@" + getBotUsername();
     if (!text.toLowerCase().contains(mention.toLowerCase())) {
       return;
     }
     LinkRequest link = parseLink(chatId, text);
     Integer replyTo = message.getMessageId();
-    if (link == null && message.getReplyToMessage() != null) {
-      link = linkFromReply(chatId, message.getReplyToMessage(), text);
-      replyTo = message.getReplyToMessage().getMessageId();
+    String replySource = replySource(message);
+    if (link == null && replySource != null) {
+      link = linkFromSource(chatId, replySource, text);
+      replyTo = replyTargetId(message, replyTo);
     }
     if (link == null) {
       sendText(chatId, "Ответьте командой /save на сообщение со ссылкой — я скачаю видео.\n"
@@ -271,11 +283,23 @@ public class TelegramBotService extends TelegramLongPollingBot {
       throws TelegramApiException {
     LinkRequest link = parseLink(chatId, args);
     Integer replyTo = message.isUserMessage() ? null : message.getMessageId();
-    if (link == null && message.getReplyToMessage() != null) {
-      link = linkFromReply(chatId, message.getReplyToMessage(), args);
-      replyTo = message.getReplyToMessage().getMessageId();
+    String replySource = replySource(message);
+    if (link == null && replySource != null) {
+      link = linkFromSource(chatId, replySource, args);
+      replyTo = replyTargetId(message, replyTo);
     }
     if (link == null) {
+      // Ответа нет (или Telegram его не передал) — берём последнюю ссылку, замеченную в чате
+      LastLink last = lastLinks.get(chatId);
+      if (last != null && last.seenAt().isAfter(Instant.now().minus(LAST_LINK_TTL))) {
+        link = parseLink(chatId, last.url() + " " + args);
+        replyTo = message.isUserMessage() ? null : last.messageId();
+      }
+    }
+    if (link == null) {
+      log.info("/save без ссылки в чате {}: reply={}, quote={}, externalReply={}", chatId,
+          message.getReplyToMessage() != null, message.getQuote() != null,
+          message.getExternalReplyInfo() != null);
       sendText(chatId, "Ответьте командой /save на сообщение со ссылкой на видео "
           + "или напишите /save <ссылка>.\nМожно сразу вырезать фрагмент: /save 0:10 0:25");
       return;
@@ -291,9 +315,9 @@ public class TelegramBotService extends TelegramLongPollingBot {
    * Ссылка из сообщения, на которое ответили; таймкоды берутся из текста ответа
    * («@бот 0:10 0:25»). {@code null}, если ссылки там нет.
    */
-  private LinkRequest linkFromReply(Long chatId, Message reply, String text)
+  private LinkRequest linkFromSource(Long chatId, String source, String text)
       throws TelegramApiException {
-    LinkRequest replyLink = parseLink(chatId, linkSource(reply));
+    LinkRequest replyLink = parseLink(chatId, source);
     if (replyLink == null) {
       return null;
     }
@@ -301,11 +325,62 @@ public class TelegramBotService extends TelegramLongPollingBot {
     return parseLink(chatId, replyLink.url() + " " + timeCodes);
   }
 
+  private record LastLink(String url, Integer messageId, Instant seenAt) {
+
+  }
+
+  /**
+   * Запоминает последнюю ссылку в групповом чате: «/save» без ответа скачает её. Бот видит
+   * обычные сообщения группы, только если в BotFather выключен режим приватности.
+   */
+  private void rememberLink(Long chatId, Message message) {
+    try {
+      LinkRequest link = LinkRequest.parse(linkSource(message));
+      if (link != null && videoDownloadService.canDownloadVideo(link.url())) {
+        lastLinks.put(chatId, new LastLink(link.url(), message.getMessageId(), Instant.now()));
+      }
+    } catch (UserFacingException ignored) {
+      // Кривые таймкоды в чужом сообщении нас не интересуют
+    }
+  }
+
+  /**
+   * Всё, откуда можно достать ссылку, если сообщение — ответ: само исходное сообщение, цитата из
+   * него или ответ на сообщение из другого чата. {@code null}, если это не ответ.
+   */
+  static String replySource(Message message) {
+    StringBuilder source = new StringBuilder();
+    if (message.getReplyToMessage() != null) {
+      source.append(linkSource(message.getReplyToMessage())).append(' ');
+    }
+    if (message.getQuote() != null && message.getQuote().getText() != null) {
+      Message quote = new Message();
+      quote.setText(message.getQuote().getText());
+      quote.setEntities(message.getQuote().getEntities());
+      source.append(linkSource(quote)).append(' ');
+    }
+    if (message.getExternalReplyInfo() != null
+        && message.getExternalReplyInfo().getLinkPreviewOptions() != null
+        && message.getExternalReplyInfo().getLinkPreviewOptions().getUrlField() != null) {
+      source.append(message.getExternalReplyInfo().getLinkPreviewOptions().getUrlField());
+    }
+    return source.toString().isBlank() ? null : source.toString();
+  }
+
+  private static Integer replyTargetId(Message message, Integer fallback) {
+    return message.getReplyToMessage() != null ? message.getReplyToMessage().getMessageId()
+        : fallback;
+  }
+
   /**
    * Текст сообщения вместе со ссылками, спрятанными под словами (text_link), и подписью к медиа.
    */
   static String linkSource(Message message) {
     StringBuilder source = new StringBuilder();
+    if (message.getLinkPreviewOptions() != null
+        && message.getLinkPreviewOptions().getUrlField() != null) {
+      source.append(message.getLinkPreviewOptions().getUrlField()).append(' ');
+    }
     List<MessageEntity> entities = new ArrayList<>();
     if (message.getText() != null) {
       source.append(message.getText());
