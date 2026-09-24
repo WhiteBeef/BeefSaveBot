@@ -39,8 +39,8 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
         if (format.path("format_id").asText(null) == null) {
           continue;
         }
-        boolean hasVideo = !"none".equals(YtDlpClient.codecOf(format, "vcodec"));
-        boolean hasAudio = !"none".equals(YtDlpClient.codecOf(format, "acodec"));
+        boolean hasVideo = hasVideo(format);
+        boolean hasAudio = hasAudio(format);
         if (hasVideo && hasAudio) {
           muxeds.add(format);
         } else if (hasVideo) {
@@ -65,16 +65,26 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
             options.maxSourceBytes());
       }
       if (candidates.isEmpty()) {
-        throw new UserFacingException("Не нашёл вариант файла размером до "
-            + options.maxSourceBytes() / 1024 / 1024 + " МБ :(");
+        // Форматы описаны не полностью (так бывает у Instagram) — пусть yt-dlp выберет сам,
+        // а размер проверим после скачивания
+        int preferred = Math.min(maxDimension(), options.quality().getMaxHeight());
+        log.info("Подходящих форматов не нашлось, выбор формата доверяем yt-dlp");
+        long max = options.maxSourceBytes();
+        candidates = List.of(new Candidate(options.audioOnly() && !audios.isEmpty()
+            ? "ba[filesize<?" + max + "]/b[filesize<?" + max + "]"
+            : "bv*[filesize<?" + max + "]+ba/b[filesize<?" + max + "]", 0, -1,
+            List.of("-S", "res:" + preferred + ",ext:mp4:m4a,vcodec:h264")));
+        audioOnlyDownload = options.audioOnly() && !audios.isEmpty();
       }
       log.info("Кандидаты собраны. Количество: {}", candidates.size());
 
       String fileNameBase = YtDlpClient.fileNameBase(root);
       for (Candidate candidate : candidates) {
         log.info("Попытка скачать формат {} ({}p)", candidate.formatSpec(), candidate.dimension());
+        List<String> args = new ArrayList<>(extraArgs());
+        args.addAll(candidate.extraArgs());
         File file = ytDlpClient.download(url, candidate.formatSpec(),
-            audioOnlyDownload ? null : "mp4", extraArgs(), fileNameBase);
+            audioOnlyDownload ? null : "mp4", args, fileNameBase);
         if (file == null) {
           continue;
         }
@@ -96,7 +106,7 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
       DownloadOptions options) {
     return audioTrack.stream()
         .map(audio -> new Candidate(audio.path("format_id").asText(), 0,
-            YtDlpClient.estimateSize(audio, duration)))
+            YtDlpClient.estimateSize(audio, duration), List.of()))
         .filter(candidate -> candidate.size() <= options.maxSourceBytes())
         .sorted(Comparator.comparingLong(Candidate::size).reversed())
         .toList();
@@ -110,26 +120,26 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
 
     if (allowMuxed(audios)) {
       for (JsonNode muxed : muxeds) {
-        if (!isCompatibleVideoCodec(YtDlpClient.codecOf(muxed, "vcodec"))
-            || !isCompatibleAudioCodec(YtDlpClient.codecOf(muxed, "acodec"))) {
+        if (!videoCodecOk(muxed) || !audioCodecOk(muxed)) {
           continue;
         }
         int dimension = dimensionOf(muxed);
         long size = YtDlpClient.estimateSize(muxed, duration);
         if (dimension <= maxDimension && size <= maxBytes) {
-          candidates.add(new Candidate(muxed.path("format_id").asText(), dimension, size));
+          candidates.add(new Candidate(muxed.path("format_id").asText(), dimension, size,
+              List.of()));
         }
       }
     }
 
     // Лучшая (самая объёмная) совместимая дорожка идёт первой
     List<JsonNode> compatibleAudios = audioTrack.stream()
-        .filter(audio -> isCompatibleAudioCodec(YtDlpClient.codecOf(audio, "acodec")))
+        .filter(this::audioCodecOk)
         .sorted(Comparator.comparingLong(
             (JsonNode audio) -> YtDlpClient.estimateSize(audio, duration)).reversed())
         .toList();
     for (JsonNode video : videos) {
-      if (!isCompatibleVideoCodec(YtDlpClient.codecOf(video, "vcodec"))) {
+      if (!videoCodecOk(video)) {
         continue;
       }
       int dimension = dimensionOf(video);
@@ -143,7 +153,7 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
         if (combinedSize <= maxBytes) {
           candidates.add(new Candidate(
               video.path("format_id").asText() + "+" + audio.path("format_id").asText(),
-              dimension, combinedSize));
+              dimension, combinedSize, List.of()));
           break;
         }
       }
@@ -158,15 +168,54 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
     return candidates;
   }
 
+  /**
+   * yt-dlp пишет "none", если дорожки точно нет, и не пишет ничего, если кодек неизвестен.
+   */
+  private static String rawCodec(JsonNode format, String field) {
+    JsonNode value = format.path(field);
+    return value.isMissingNode() || value.isNull() ? null : value.asText();
+  }
+
+  private static boolean hasDimensions(JsonNode format) {
+    return format.path("width").asInt(0) > 0 || format.path("height").asInt(0) > 0;
+  }
+
+  private static boolean hasVideo(JsonNode format) {
+    String codec = rawCodec(format, "vcodec");
+    return codec == null ? hasDimensions(format) : !"none".equals(codec);
+  }
+
+  private static boolean hasAudio(JsonNode format) {
+    String codec = rawCodec(format, "acodec");
+    if (codec != null) {
+      return !"none".equals(codec);
+    }
+    // Кодеки неизвестны, но есть кадр — обычно это обычный mp4 со звуком
+    return rawCodec(format, "vcodec") == null && hasDimensions(format);
+  }
+
+  private boolean videoCodecOk(JsonNode format) {
+    String codec = rawCodec(format, "vcodec");
+    return codec == null || isCompatibleVideoCodec(codec);
+  }
+
+  private boolean audioCodecOk(JsonNode format) {
+    String codec = rawCodec(format, "acodec");
+    return codec == null || isCompatibleAudioCodec(codec);
+  }
+
   protected abstract boolean isCompatibleVideoCodec(String codec);
 
   protected abstract boolean isCompatibleAudioCodec(String codec);
 
   /**
-   * Размер, по которому ограничивается и выбирается качество.
+   * Размер, по которому ограничивается и выбирается качество: короткая сторона кадра, чтобы
+   * вертикальное видео 1080×1920 считалось 1080p, а не 1920p.
    */
   protected int dimensionOf(JsonNode format) {
-    return format.path("height").asInt(0);
+    int width = format.path("width").asInt(0);
+    int height = format.path("height").asInt(0);
+    return width > 0 && height > 0 ? Math.min(width, height) : height;
   }
 
   protected int maxDimension() {
@@ -188,7 +237,7 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
     return true;
   }
 
-  private record Candidate(String formatSpec, int dimension, long size) {
+  private record Candidate(String formatSpec, int dimension, long size, List<String> extraArgs) {
 
   }
 }
