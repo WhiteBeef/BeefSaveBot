@@ -51,6 +51,50 @@ public class TiktokDownloadService extends AbstractYtDlpDownloadService {
         } catch (UnsupportedUrlException e) {
             // Ссылку не удалось раскрыть заранее, но это может быть слайд-шоу
             return downloadSlideshow(resolved, options);
+        } catch (UserFacingException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // yt-dlp сломался на стороне TikTok (например, страница-заглушка) — качаем сами
+            log.warn("yt-dlp не скачал {}: {}. Пробую напрямую", url, e.getMessage());
+            File file = downloadDirectly(resolved, options);
+            if (file == null) {
+                throw e;
+            }
+            return file;
+        }
+    }
+
+    /**
+     * Скачивание без yt-dlp по прямой ссылке со страницы поста или из tikwm.com.
+     *
+     * @return файл или {@code null}, если ссылку получить не удалось
+     */
+    private File downloadDirectly(String url, DownloadOptions options) {
+        TiktokSlideshowFetcher.VideoPost post = slideshowFetcher.fetchVideo(url);
+        if (post == null) {
+            return null;
+        }
+        Path dir = null;
+        try {
+            dir = Files.createTempDirectory("ytdlp_tiktok_");
+            String title = post.title() == null ? "" : post.title().replaceAll("#\\S+", "").trim();
+            String id = TiktokSlideshowFetcher.postId(url);
+            Path target = dir.resolve(YtDlpClient.sanitizeFileName(
+                title.length() > 60 ? title.substring(0, 60) : title,
+                "tiktok_" + (id != null ? id : UUID.randomUUID())) + ".mp4");
+            slideshowFetcher.download(post.videoUrl(), target);
+            if (Files.size(target) > options.maxSourceBytes()) {
+                throw new UserFacingException("Видео больше "
+                    + options.maxSourceBytes() / 1024 / 1024 + " МБ :(");
+            }
+            return target.toFile();
+        } catch (UserFacingException e) {
+            YtDlpClient.deleteDirectory(dir);
+            throw e;
+        } catch (Exception e) {
+            log.warn("Не удалось скачать видео TikTok напрямую: {}", e.getMessage());
+            YtDlpClient.deleteDirectory(dir);
+            return null;
         }
     }
 
