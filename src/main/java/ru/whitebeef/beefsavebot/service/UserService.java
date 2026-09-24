@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 import ru.whitebeef.beefsavebot.dto.UserInfoDto;
 import ru.whitebeef.beefsavebot.entity.UserInfo;
 import ru.whitebeef.beefsavebot.mappers.UserInfoMapper;
+import ru.whitebeef.beefsavebot.model.MusicProvider;
 import ru.whitebeef.beefsavebot.model.OutputFormat;
 import ru.whitebeef.beefsavebot.model.Quality;
 import ru.whitebeef.beefsavebot.repository.UserInfoRepository;
@@ -32,6 +33,12 @@ public class UserService {
 
   @Transactional
   public UserInfo updateSettings(Long telegramUserId, Quality quality, OutputFormat outputFormat) {
+    return updateSettings(telegramUserId, quality, outputFormat, null);
+  }
+
+  @Transactional
+  public UserInfo updateSettings(Long telegramUserId, Quality quality, OutputFormat outputFormat,
+      MusicProvider musicProvider) {
     UserInfo userInfo = userInfoRepository.findByTelegramUserId(telegramUserId)
         .orElseThrow(() -> new IllegalStateException("Пользователь не найден: " + telegramUserId));
     if (quality != null) {
@@ -39,6 +46,9 @@ public class UserService {
     }
     if (outputFormat != null) {
       userInfo.setOutputFormat(outputFormat);
+    }
+    if (musicProvider != null) {
+      userInfo.setMusicProvider(musicProvider);
     }
     return userInfoRepository.save(userInfo);
   }

@@ -53,7 +53,9 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
                WHEN url ILIKE '%youtu%' THEN 'YouTube'
                WHEN url ILIKE '%tiktok.com%' THEN 'TikTok'
                WHEN url ILIKE '%instagram.com%' THEN 'Instagram'
-               WHEN url ILIKE '%music.yandex%' OR url LIKE 'yandex-music-search:%' THEN 'Яндекс Музыка'
+               WHEN url ILIKE '%music.yandex%' OR url LIKE 'yandex-music-search:%'
+                 OR url LIKE 'Яндекс Музыка:%' THEN 'Яндекс Музыка'
+               WHEN url ILIKE '%soundcloud%' OR url LIKE 'SoundCloud:%' THEN 'SoundCloud'
                ELSE 'Другое'
              END AS platform,
              COUNT(*) AS cnt

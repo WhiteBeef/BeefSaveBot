@@ -67,6 +67,28 @@ public class YtDlpClient {
   }
 
   /**
+   * Поиск через yt-dlp (например, {@code scsearch5:запрос}): по JSON-объекту на каждый результат.
+   * Результаты не раскрываются полностью ({@code --flat-playlist}), поэтому поиск быстрый.
+   */
+  public List<JsonNode> search(String searchQuery) throws IOException, InterruptedException {
+    Process process = new ProcessBuilder("yt-dlp", "--flat-playlist", "-j", searchQuery)
+        .redirectError(ProcessBuilder.Redirect.DISCARD)
+        .start();
+    String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    if (!process.waitFor(METADATA_TIMEOUT_MINUTES, TimeUnit.MINUTES)) {
+      process.destroyForcibly();
+      throw new IOException("yt-dlp не успел выполнить поиск");
+    }
+    List<JsonNode> results = new ArrayList<>();
+    for (String line : output.split("\n")) {
+      if (!line.isBlank()) {
+        results.add(mapper.readTree(line));
+      }
+    }
+    return results;
+  }
+
+  /**
    * Скачивает формат {@code formatSpec} в отдельную временную директорию.
    *
    * @return скачанный файл или {@code null}, если yt-dlp завершился с ошибкой
