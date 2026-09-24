@@ -62,6 +62,14 @@ public class TiktokSlideshowFetcher {
 
   }
 
+  /**
+   * Прямая ссылка на видео (без водяного знака, если есть) — запасной путь, когда не справился
+   * yt-dlp.
+   */
+  public record VideoPost(String videoUrl, String title) {
+
+  }
+
   public static boolean isPhotoUrl(String url) {
     return url != null && url.contains("/photo/");
   }
@@ -114,6 +122,81 @@ public class TiktokSlideshowFetcher {
     }
     log.warn("Не удалось получить слайд-шоу {}: {}", url, problems);
     throw new UserFacingException("Не получилось скачать слайд-шоу из TikTok, попробуйте позже");
+  }
+
+  /**
+   * Ищет прямую ссылку на видео: сначала в данных страницы поста, затем через tikwm.com.
+   */
+  public VideoPost fetchVideo(String url) {
+    List<String> problems = new ArrayList<>();
+    try {
+      HttpResponse<String> response = httpClient.send(request(url).build(),
+          HttpResponse.BodyHandlers.ofString());
+      VideoPost post = parseVideoPage(response.body());
+      if (post != null) {
+        return post;
+      }
+      problems.add("на странице нет ссылки на видео (HTTP " + response.statusCode() + ")");
+    } catch (Exception e) {
+      problems.add("страница: " + e.getMessage());
+    }
+    if (downloadConfiguration.isSlideshowFallbackApiEnabled()) {
+      try {
+        HttpResponse<String> response = httpClient.send(request(
+                "https://www.tikwm.com/api/?hd=1&url=" + URLEncoder.encode(url,
+                    StandardCharsets.UTF_8)).build(),
+            HttpResponse.BodyHandlers.ofString());
+        VideoPost post = parseTikwmVideo(response.body());
+        if (post != null) {
+          return post;
+        }
+        problems.add("tikwm: нет ссылки на видео");
+      } catch (Exception e) {
+        problems.add("tikwm: " + e.getMessage());
+      }
+    }
+    log.warn("Не удалось получить видео TikTok {} без yt-dlp: {}", url, problems);
+    return null;
+  }
+
+  static VideoPost parseVideoPage(String html) throws IOException {
+    if (html == null) {
+      return null;
+    }
+    Matcher universal = UNIVERSAL_DATA.matcher(html);
+    if (!universal.find()) {
+      return null;
+    }
+    JsonNode item = new ObjectMapper().readTree(universal.group(1))
+        .path("__DEFAULT_SCOPE__").path("webapp.video-detail").path("itemInfo")
+        .path("itemStruct");
+    JsonNode video = item.path("video");
+    for (String field : List.of("playAddr", "downloadAddr")) {
+      String address = video.path(field).asText("");
+      if (address.startsWith("http")) {
+        return new VideoPost(address, blankToNull(item.path("desc").asText(null)));
+      }
+    }
+    return null;
+  }
+
+  static VideoPost parseTikwmVideo(String json) throws IOException {
+    JsonNode root = new ObjectMapper().readTree(json);
+    if (root.path("code").asInt(-1) != 0) {
+      return null;
+    }
+    JsonNode data = root.path("data");
+    for (String field : List.of("hdplay", "play", "wmplay")) {
+      String address = data.path(field).asText("");
+      if (address.isBlank()) {
+        continue;
+      }
+      if (address.startsWith("/")) {
+        address = "https://www.tikwm.com" + address;
+      }
+      return new VideoPost(address, blankToNull(data.path("title").asText(null)));
+    }
+    return null;
   }
 
   /**

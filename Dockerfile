@@ -33,9 +33,10 @@ COPY --from=builder /app/spring-boot-loader/ ./
 COPY --from=builder /app/snapshot-dependencies/ ./
 COPY --from=builder /app/application/ ./
 
-# yt-dlp ставится после приложения, чтобы при каждой пересборке подтягивалась свежая версия
+# yt-dlp ставится после приложения, чтобы при каждой пересборке подтягивалась свежая версия.
+# curl-cffi нужен для impersonation: без него TikTok отдаёт yt-dlp заглушку вместо страницы
 RUN python3 -m venv /opt/ytdlp-venv && \
-    /opt/ytdlp-venv/bin/pip install --no-cache-dir -U yt-dlp && \
+    /opt/ytdlp-venv/bin/pip install --no-cache-dir -U "yt-dlp[default,curl-cffi]" && \
     ln -sf /opt/ytdlp-venv/bin/yt-dlp /usr/local/bin/yt-dlp
 
 ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]

@@ -161,4 +161,43 @@ class TiktokSlideshowTest {
     assertTrue(result.exists());
     YtDlpClient.deleteDirectory(result.getParentFile().toPath());
   }
+
+  @Test
+  void parsesVideoLinkFromPageAndTikwm() throws Exception {
+    TiktokSlideshowFetcher.VideoPost page = TiktokSlideshowFetcher.parseVideoPage("""
+        <script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">
+        {"__DEFAULT_SCOPE__":{"webapp.video-detail":{"itemInfo":{"itemStruct":{
+          "desc":"Видео #fyp","video":{"playAddr":"https://v16.tiktokcdn.com/v.mp4"}}}}}}
+        </script>""");
+    assertEquals("https://v16.tiktokcdn.com/v.mp4", page.videoUrl());
+
+    TiktokSlideshowFetcher.VideoPost tikwm = TiktokSlideshowFetcher.parseTikwmVideo("""
+        {"code":0,"data":{"title":"t","hdplay":"/video/media/hdplay/123.mp4",
+          "play":"https://v.mp4"}}""");
+    assertEquals("https://www.tikwm.com/video/media/hdplay/123.mp4", tikwm.videoUrl());
+    assertNull(TiktokSlideshowFetcher.parseTikwmVideo("{\"code\":-1}"));
+  }
+
+  @Test
+  void brokenYtDlpFallsBackToDirectDownload() throws Exception {
+    TiktokSlideshowFetcher fetcher = mock(TiktokSlideshowFetcher.class);
+    YtDlpClient ytDlp = mock(YtDlpClient.class);
+    String url = "https://vt.tiktok.com/ZSb8JMELy/";
+    String resolved = "https://www.tiktok.com/@u/video/7688661601192283413";
+    when(fetcher.resolve(url)).thenReturn(resolved);
+    when(ytDlp.fetchMetadata(eq(url), anyList())).thenThrow(new RuntimeException(
+        "Не удалось получить метаданные: Unexpected response from webpage request"));
+    when(fetcher.fetchVideo(resolved)).thenReturn(
+        new TiktokSlideshowFetcher.VideoPost("https://v.mp4", "Смешное видео #fyp"));
+    doAnswer(invocation -> Files.writeString(invocation.getArgument(1), "video"))
+        .when(fetcher).download(anyString(), any());
+
+    TiktokDownloadService service = new TiktokDownloadService(new DownloadConfiguration(), ytDlp,
+        fetcher, mock(SlideshowBuilder.class));
+    File result = service.downloadVideo(url,
+        new DownloadOptions(Quality.HIGH, false, 50L * 1024 * 1024));
+
+    assertEquals("Смешное видео.mp4", result.getName());
+    YtDlpClient.deleteDirectory(result.getParentFile().toPath());
+  }
 }
