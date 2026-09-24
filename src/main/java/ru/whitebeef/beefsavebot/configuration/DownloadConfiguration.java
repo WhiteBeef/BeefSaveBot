@@ -21,6 +21,18 @@ public class DownloadConfiguration {
   @Value("${download.ffmpeg-timeout-minutes:15}")
   private long ffmpegTimeoutMinutes;
 
+  /**
+   * Сколько секунд показывается каждый слайд в видео из слайд-шоу TikTok.
+   */
+  @Value("${download.slideshow.seconds-per-slide:3}")
+  private double slideSeconds;
+
+  /**
+   * Запасной сторонний API (tikwm.com) для слайд-шоу TikTok, если не удалось разобрать страницу.
+   */
+  @Value("${download.slideshow.fallback-api-enabled:true}")
+  private boolean slideshowFallbackApiEnabled;
+
   @Value("${download.max-height:1080}")
   private int maxHeight;
 

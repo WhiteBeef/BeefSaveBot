@@ -159,6 +159,53 @@ public class MediaProcessingService {
     return kbps;
   }
 
+  /**
+   * Исполнитель и название для отправки аудио в Telegram. Берутся из тегов файла, а если их нет —
+   * из имени вида «Исполнитель - Название».
+   */
+  public AudioTags readAudioTags(File file) {
+    String performer = null;
+    String title = null;
+    try {
+      Process process = new ProcessBuilder("ffprobe", "-v", "error", "-print_format", "json",
+          "-show_entries", "format_tags=artist,title", file.getAbsolutePath())
+          .redirectError(ProcessBuilder.Redirect.INHERIT)
+          .start();
+      String json = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      if (process.waitFor(30, TimeUnit.SECONDS) && process.exitValue() == 0) {
+        JsonNode tags = mapper.readTree(json).path("format").path("tags");
+        performer = textOrNull(tags, "artist");
+        title = textOrNull(tags, "title");
+      }
+    } catch (Exception e) {
+      log.debug("Не удалось прочитать теги {}: {}", file.getName(), e.getMessage());
+    }
+    String baseName = baseNameOf(file);
+    int separator = baseName.indexOf(" - ");
+    if (performer == null && separator > 0) {
+      performer = baseName.substring(0, separator).trim();
+    }
+    if (title == null) {
+      title = separator > 0 ? baseName.substring(separator + 3).trim() : baseName;
+    }
+    return new AudioTags(performer, title);
+  }
+
+  private static String textOrNull(JsonNode tags, String field) {
+    // В разных контейнерах ключи тегов бывают в разном регистре
+    for (var it = tags.fields(); it.hasNext(); ) {
+      var entry = it.next();
+      if (entry.getKey().equalsIgnoreCase(field) && !entry.getValue().asText("").isBlank()) {
+        return entry.getValue().asText().trim();
+      }
+    }
+    return null;
+  }
+
+  public record AudioTags(String performer, String title) {
+
+  }
+
   private MediaInfo probe(File file) throws IOException, InterruptedException {
     List<String> command = List.of("ffprobe", "-v", "error", "-print_format", "json",
         "-show_format", "-show_streams", file.getAbsolutePath());
