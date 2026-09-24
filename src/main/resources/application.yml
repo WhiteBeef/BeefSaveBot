@@ -21,6 +21,8 @@ telegram:
     username: ${TELEGRAM_BOT_USERNAME}
     # Telegram ID единственного администратора (узнать свой ID можно у @userinfobot)
     admin-id: ${TELEGRAM_ADMIN_ID:}
+    # Чат для загрузки видео в инлайн-режиме (по умолчанию — чат админа, сообщения сразу удаляются)
+    storage-chat-id: ${TELEGRAM_STORAGE_CHAT_ID:}
     author: ${TELEGRAM_BOT_AUTHOR:@WhiteBeef}
     timezone: ${BOT_TIMEZONE:Europe/Moscow}
 

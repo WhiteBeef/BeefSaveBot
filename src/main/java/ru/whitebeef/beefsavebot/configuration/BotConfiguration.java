@@ -20,6 +20,13 @@ public class BotConfiguration {
     @Value("${telegram.bot.admin-id:}")
     private String adminId;
 
+    /**
+     * Служебный чат, куда бот загружает файлы для инлайн-режима (сообщения сразу удаляются).
+     * Пусто — используется чат администратора.
+     */
+    @Value("${telegram.bot.storage-chat-id:}")
+    private String storageChatId;
+
     @Value("${telegram.bot.author:@WhiteBeef}")
     private String author;
 
@@ -32,6 +39,16 @@ public class BotConfiguration {
     public boolean isAdmin(Long telegramUserId) {
         return telegramUserId != null && adminId != null && !adminId.isBlank()
             && adminId.trim().equals(telegramUserId.toString());
+    }
+
+    /**
+     * Чат для загрузки файлов инлайн-режима или {@code null}, если не настроен.
+     */
+    public String getEffectiveStorageChatId() {
+        if (storageChatId != null && !storageChatId.isBlank()) {
+            return storageChatId.trim();
+        }
+        return adminId == null || adminId.isBlank() ? null : adminId.trim();
     }
 
     public ZoneId getZoneId() {

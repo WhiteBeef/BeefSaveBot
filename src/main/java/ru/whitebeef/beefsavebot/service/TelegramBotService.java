@@ -67,6 +67,7 @@ import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 import ru.whitebeef.beefsavebot.service.download.YandexMusicDownloadService;
 import ru.whitebeef.beefsavebot.service.download.YandexMusicDownloadService.TrackSearchResult;
 import ru.whitebeef.beefsavebot.service.media.CropRange;
+import ru.whitebeef.beefsavebot.service.media.LinkRequest;
 import ru.whitebeef.beefsavebot.service.media.MediaProcessingService;
 import ru.whitebeef.beefsavebot.service.media.TimeCode;
 import ru.whitebeef.beefsavebot.service.media.UserFacingException;
@@ -101,6 +102,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private final AdminService adminService;
   private final AdminPanel adminPanel;
   private final ConversionService conversionService;
+  private final InlineDownloadHandler inlineDownloadHandler;
   private final ExecutorService executorService = Executors.newFixedThreadPool(10);
 
   @PostConstruct
@@ -156,6 +158,21 @@ public class TelegramBotService extends TelegramLongPollingBot {
 
   @Override
   public void onUpdateReceived(Update update) {
+    if (update.hasInlineQuery()) {
+      executorService.execute(() -> {
+        try {
+          inlineDownloadHandler.handleQuery(this, update.getInlineQuery());
+        } catch (Exception e) {
+          log.warn("Ошибка инлайн-запроса: {}", e.getMessage());
+        }
+      });
+      return;
+    }
+    if (update.hasChosenInlineQuery()) {
+      executorService.execute(() -> inlineDownloadHandler.handleChosen(this,
+          update.getChosenInlineQuery()));
+      return;
+    }
     if (update.hasCallbackQuery()) {
       executorService.execute(() -> this.executeCallback(update));
       return;
@@ -190,16 +207,69 @@ public class TelegramBotService extends TelegramLongPollingBot {
         handleCommand(chatId, userInfo, text, admin);
         return;
       }
-      handleDownload(chatId, userInfo, text, null);
+      if (!message.isUserMessage()) {
+        handleGroupMessage(chatId, userInfo, text);
+        return;
+      }
+      LinkRequest link = parseLink(chatId, text);
+      if (link != null) {
+        handleDownload(chatId, userInfo, link.url(), link.crop());
+      } else {
+        // Ссылок нет — ищем текст как название трека
+        handleDownload(chatId, userInfo, text, null);
+      }
     } catch (Exception e) {
       log.error("Ошибка при обработке сообщения '{}': {}", text, e.getMessage(), e);
       sendError(chatId);
     }
   }
 
+  /**
+   * В группах бот реагирует только на упоминание: «@бот ссылка [начало конец]».
+   */
+  private void handleGroupMessage(Long chatId, UserInfo userInfo, String text)
+      throws TelegramApiException {
+    String mention = "@" + getBotUsername();
+    if (!text.toLowerCase().contains(mention.toLowerCase())) {
+      return;
+    }
+    LinkRequest link = parseLink(chatId, text);
+    if (link == null) {
+      sendText(chatId, "Пришлите ссылку вместе с упоминанием: " + mention + " <ссылка>\n"
+          + "Можно сразу вырезать фрагмент: " + mention + " <ссылка> 0:10 0:25");
+      return;
+    }
+    if (!videoDownloadService.canDownloadVideo(link.url())) {
+      sendText(chatId, "Не умею скачивать по этой ссылке :(");
+      return;
+    }
+    handleDownload(chatId, userInfo, link.url(), link.crop());
+  }
+
+  /**
+   * Ссылка из текста; об ошибке в таймкодах сообщает пользователю и возвращает {@code null}.
+   */
+  private LinkRequest parseLink(Long chatId, String text) throws TelegramApiException {
+    try {
+      return LinkRequest.parse(text);
+    } catch (UserFacingException e) {
+      sendHtml(chatId, "⚠️ " + Html.escape(e.getMessage()) + "\n\n" + cropHelpText(), null);
+      return null;
+    }
+  }
+
   public void executeCallback(Update update) {
     CallbackQuery callbackQuery = update.getCallbackQuery();
     String data = callbackQuery.getData();
+    if (callbackQuery.getMessage() == null) {
+      // Кнопки инлайн-сообщений приходят без самого сообщения
+      if (data != null && data.startsWith(InlineDownloadHandler.CALLBACK_PREFIX)) {
+        inlineDownloadHandler.handleCallback(this, callbackQuery);
+      } else {
+        answerCallback(callbackQuery, null);
+      }
+      return;
+    }
     Long chatId = callbackQuery.getMessage().getChatId();
     if (data == null) {
       answerCallback(callbackQuery, null);
@@ -290,6 +360,10 @@ public class TelegramBotService extends TelegramLongPollingBot {
         + "/crop &lt;ссылка&gt; &lt;начало&gt; &lt;конец&gt; — обрезать видео\n"
         + "/convert — какие форматы умею конвертировать\n"
         + "/help — это сообщение\n\n"
+        + "<b>В любом чате:</b> напиши <code>@" + Html.escape(getBotUsername())
+        + " ссылка</code> и выбери подсказку — видео отправится прямо в этот чат. "
+        + "В группах, где есть бот, можно просто упомянуть его со ссылкой. "
+        + "После ссылки можно указать начало и конец фрагмента: <code>ссылка 0:10 0:25</code>\n\n"
         + "👨‍💻 Автор: " + author + "\n\n"
         + "💚 Бот работает на безвозмездной основе — без рекламы и платных подписок. "
         + "Если он тебе понравился, в благодарность принимаю подарки в Telegram 🎁 → " + author;
