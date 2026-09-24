@@ -55,6 +55,10 @@ public class YtDlpClient {
     }
     stderrReader.join();
     if (process.exitValue() != 0) {
+      if (stderr.indexOf("Unsupported URL") >= 0) {
+        log.warn("yt-dlp не поддерживает ссылку {}", url);
+        throw new UnsupportedUrlException();
+      }
       log.error("yt-dlp не смог получить метаданные {}: {}", url, stderr);
       throw new RuntimeException("Не удалось получить метаданные: " + stderr);
     }

@@ -35,6 +35,10 @@ download:
   yt-dlp:
     user-agent: ${DOWNLOAD_YT_DLP_USER_AGENT:}
     cookies-file: ${DOWNLOAD_YT_DLP_COOKIES_FILE:}
+  slideshow:
+    seconds-per-slide: ${DOWNLOAD_SLIDESHOW_SECONDS_PER_SLIDE:3}
+    # Запасной сторонний API (tikwm.com), если страницу TikTok разобрать не удалось
+    fallback-api-enabled: ${DOWNLOAD_SLIDESHOW_FALLBACK_API:true}
   yandex-music:
     token: ${YANDEX_MUSIC_TOKEN:}
 
