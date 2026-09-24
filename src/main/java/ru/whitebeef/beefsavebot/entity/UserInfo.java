@@ -13,6 +13,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import ru.whitebeef.beefsavebot.model.MusicProvider;
 import ru.whitebeef.beefsavebot.model.OutputFormat;
 import ru.whitebeef.beefsavebot.model.Quality;
 
@@ -55,6 +56,11 @@ public class UserInfo {
   @Enumerated(EnumType.STRING)
   @Column(name = "output_format", nullable = false)
   private OutputFormat outputFormat = OutputFormat.MP4;
+
+  @Builder.Default
+  @Enumerated(EnumType.STRING)
+  @Column(name = "music_provider", nullable = false)
+  private MusicProvider musicProvider = MusicProvider.YANDEX;
 
   @Builder.Default
   @Column(name = "banned", nullable = false)

@@ -58,6 +58,7 @@ import ru.whitebeef.beefsavebot.dto.Screen;
 import ru.whitebeef.beefsavebot.dto.UserInfoDto;
 import ru.whitebeef.beefsavebot.entity.RequestLog;
 import ru.whitebeef.beefsavebot.entity.UserInfo;
+import ru.whitebeef.beefsavebot.model.MusicProvider;
 import ru.whitebeef.beefsavebot.model.OutputFormat;
 import ru.whitebeef.beefsavebot.model.Quality;
 import ru.whitebeef.beefsavebot.model.RequestType;
@@ -70,8 +71,9 @@ import ru.whitebeef.beefsavebot.service.convert.Formats;
 import ru.whitebeef.beefsavebot.service.download.MediaType;
 import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 import ru.whitebeef.beefsavebot.service.download.YandexMusicDownloadService;
-import ru.whitebeef.beefsavebot.service.download.YandexMusicDownloadService.TrackSearchResult;
 import ru.whitebeef.beefsavebot.service.media.CropRange;
+import ru.whitebeef.beefsavebot.service.music.MusicSearchService;
+import ru.whitebeef.beefsavebot.service.music.TrackResult;
 import ru.whitebeef.beefsavebot.service.media.LinkRequest;
 import ru.whitebeef.beefsavebot.service.media.MediaProcessingService;
 import ru.whitebeef.beefsavebot.service.media.TimeCode;
@@ -86,6 +88,9 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private static final String TRACK_CALLBACK_PREFIX = "ym_track:";
   private static final String QUALITY_CALLBACK_PREFIX = "set:q:";
   private static final String FORMAT_CALLBACK_PREFIX = "set:f:";
+  private static final String MUSIC_PROVIDER_CALLBACK_PREFIX = "set:m:";
+  private static final String MUSIC_TRACK_CALLBACK_PREFIX = "mus:";
+  private static final String MUSIC_SEARCH_ALL_CALLBACK_PREFIX = "msrch:";
   private static final int BUTTON_TEXT_LIMIT = 64;
   private static final int MESSAGE_LIMIT = 4000;
   private static final Duration LAST_LINK_TTL = Duration.ofHours(6);
@@ -109,6 +114,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private final AdminPanel adminPanel;
   private final ConversionService conversionService;
   private final InlineDownloadHandler inlineDownloadHandler;
+  private final MusicSearchService musicSearchService;
   /**
    * Последняя ссылка на видео в каждом групповом чате.
    */
@@ -443,7 +449,15 @@ public class TelegramBotService extends TelegramLongPollingBot {
       if (data.startsWith(TRACK_CALLBACK_PREFIX)) {
         answerCallback(callbackQuery, null);
         handleTrackCallback(chatId, userInfo, data.substring(TRACK_CALLBACK_PREFIX.length()));
-      } else if (data.startsWith(QUALITY_CALLBACK_PREFIX) || data.startsWith(FORMAT_CALLBACK_PREFIX)) {
+      } else if (data.startsWith(MUSIC_TRACK_CALLBACK_PREFIX)) {
+        answerCallback(callbackQuery, null);
+        handleMusicTrack(chatId, userInfo,
+            data.substring(MUSIC_TRACK_CALLBACK_PREFIX.length()));
+      } else if (data.startsWith(MUSIC_SEARCH_ALL_CALLBACK_PREFIX)) {
+        handleMusicSearchEverywhere(callbackQuery, userInfo,
+            data.substring(MUSIC_SEARCH_ALL_CALLBACK_PREFIX.length()));
+      } else if (data.startsWith(QUALITY_CALLBACK_PREFIX) || data.startsWith(FORMAT_CALLBACK_PREFIX)
+          || data.startsWith(MUSIC_PROVIDER_CALLBACK_PREFIX)) {
         handleSettingsCallback(callbackQuery, userInfo, data);
       } else if (data.startsWith(ConversionService.CALLBACK_PREFIX)) {
         handleConversionCallback(callbackQuery, userInfo,
@@ -509,7 +523,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         + "<b>Откуда умею скачивать:</b>\n"
         + Html.escape(videoDownloadService.getSupportedSites()) + "\n\n"
         + "<b>Что ещё умею:</b>\n"
-        + "🎵 Искать треки в Яндекс Музыке — просто напиши название песни\n"
+        + "🎵 Искать треки в Яндекс Музыке и SoundCloud — просто напиши название песни "
+        + "(где искать сначала — в /settings)\n"
         + "⚙️ Присылать файл в нужном формате (MP4, MP3, WEBM, WEBP) и качестве — /settings\n"
         + "✂️ Вырезать фрагмент видео с точностью до кадра — /crop\n"
         + "🔄 Конвертировать файлы и целые архивы: картинки, видео, аудио, документы, таблицы, "
@@ -541,7 +556,9 @@ public class TelegramBotService extends TelegramLongPollingBot {
         + "MP3 — только звук\n"
         + "WEBM — видео VP9/Opus\n"
         + "WEBP — анимация без звука, как гифка\n\n"
-        + "<i>Треки из Яндекс Музыки всегда приходят в MP3, качество влияет на битрейт.</i>";
+        + "Музыка: <b>" + userInfo.getMusicProvider().getTitle() + "</b> — где сначала искать "
+        + "треки по названию. Если там не найдётся, поищу в остальных.\n\n"
+        + "<i>Музыка всегда приходит в MP3, качество влияет на битрейт.</i>";
   }
 
   private InlineKeyboardMarkup settingsKeyboard(UserInfo userInfo) {
@@ -559,7 +576,19 @@ public class TelegramBotService extends TelegramLongPollingBot {
           .callbackData(FORMAT_CALLBACK_PREFIX + format.name())
           .build());
     }
-    return InlineKeyboardMarkup.builder().keyboard(List.of(qualityRow, formatRow)).build();
+    List<InlineKeyboardButton> musicRow = new ArrayList<>();
+    for (MusicProvider provider : musicSearchService.availableProviders()) {
+      musicRow.add(InlineKeyboardButton.builder()
+          .text((provider == userInfo.getMusicProvider() ? "✅ " : provider.getEmoji() + " ")
+              + provider.getTitle())
+          .callbackData(MUSIC_PROVIDER_CALLBACK_PREFIX + provider.name())
+          .build());
+    }
+    List<List<InlineKeyboardButton>> rows = new ArrayList<>(List.of(qualityRow, formatRow));
+    if (musicRow.size() > 1) {
+      rows.add(musicRow);
+    }
+    return InlineKeyboardMarkup.builder().keyboard(rows).build();
   }
 
   private void handleSettingsCallback(CallbackQuery callbackQuery, UserInfo userInfo, String data)
@@ -568,12 +597,16 @@ public class TelegramBotService extends TelegramLongPollingBot {
         ? Quality.parse(data.substring(QUALITY_CALLBACK_PREFIX.length())) : null;
     OutputFormat format = data.startsWith(FORMAT_CALLBACK_PREFIX)
         ? OutputFormat.parse(data.substring(FORMAT_CALLBACK_PREFIX.length())) : null;
-    if ((quality == null && format == null)
-        || quality == userInfo.getQuality() || format == userInfo.getOutputFormat()) {
+    MusicProvider musicProvider = data.startsWith(MUSIC_PROVIDER_CALLBACK_PREFIX)
+        ? MusicProvider.parse(data.substring(MUSIC_PROVIDER_CALLBACK_PREFIX.length())) : null;
+    if ((quality == null && format == null && musicProvider == null)
+        || quality == userInfo.getQuality() || format == userInfo.getOutputFormat()
+        || musicProvider == userInfo.getMusicProvider()) {
       answerCallback(callbackQuery, null);
       return;
     }
-    UserInfo updated = userService.updateSettings(userInfo.getTelegramUserId(), quality, format);
+    UserInfo updated = userService.updateSettings(userInfo.getTelegramUserId(), quality, format,
+        musicProvider);
     answerCallback(callbackQuery, "Сохранено ✅");
     try {
       execute(EditMessageText.builder()
@@ -656,7 +689,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
     if (!videoDownloadService.canDownloadVideo(url)) {
       if (crop == null) {
         requestService.saveRequest(userInfo, RequestType.SEARCH, url, null, null);
-        offerSearchResults(chatId, url);
+        offerSearchResults(chatId, userInfo, url);
       } else {
         RequestLog requestLog = requestService.saveRequest(userInfo, requestType, requestText,
             null, null);
@@ -724,32 +757,89 @@ public class TelegramBotService extends TelegramLongPollingBot {
     }
   }
 
-  private void offerSearchResults(Long chatId, String query) throws TelegramApiException {
-    List<TrackSearchResult> results = yandexMusicDownloadService.search(query);
-    if (results.isEmpty()) {
-      execute(SendMessage.builder()
-          .chatId(chatId.toString())
-          .text(
-              "Я пока не умею обрабатывать видео этого типа, и по названию ничего не нашлось в Яндекс Музыке!\nВот сайты, откуда я умею скачивать видео:\n\n"
-                  + videoDownloadService.getSupportedSites()
-                  + "\n\nСвяжитесь с " + botConfig.getAuthor()
-                  + ", если вам необходим какой-то сайт, которого нет в списке :0")
-          .build());
+  /**
+   * Текст без ссылки ищем как название трека: сначала у выбранного поставщика музыки, а если
+   * там пусто — у всех остальных.
+   */
+  private void offerSearchResults(Long chatId, UserInfo userInfo, String query)
+      throws TelegramApiException {
+    MusicProvider preferred = userInfo.getMusicProvider();
+    MusicSearchService.SearchResults results = musicSearchService.search(query, preferred);
+    if (results.tracks().isEmpty()) {
+      String where = musicSearchService.availableProviders().stream()
+          .map(MusicProvider::getTitle)
+          .reduce((a, b) -> a + ", " + b)
+          .orElse("музыкальных сервисах");
+      sendText(chatId, "Не распознал ссылку, и по названию ничего не нашлось (" + where
+          + ").\nВот сайты, откуда я умею скачивать:\n\n"
+          + videoDownloadService.getSupportedSites()
+          + "\n\nСвяжитесь с " + botConfig.getAuthor()
+          + ", если вам необходим какой-то сайт, которого нет в списке :0");
       return;
     }
-
-    List<List<InlineKeyboardButton>> keyboard = results.stream()
-        .map(result -> List.of(InlineKeyboardButton.builder()
-            .text(truncate(result.display()))
-            .callbackData(TRACK_CALLBACK_PREFIX + result.trackId())
-            .build()))
-        .toList();
-
+    String header = results.fromPreferred()
+        ? "Не распознал ссылку, но нашёл в " + preferred.getTitle() + ":"
+        : "В " + preferred.getTitle() + " ничего не нашлось, вот что есть в других сервисах:";
+    List<List<InlineKeyboardButton>> keyboard = new ArrayList<>(trackButtons(results.tracks()));
+    boolean othersAvailable = musicSearchService.availableProviders().stream()
+        .anyMatch(provider -> provider != preferred);
+    if (results.fromPreferred() && othersAvailable) {
+      keyboard.add(List.of(InlineKeyboardButton.builder()
+          .text("🔎 Искать везде")
+          .callbackData(MUSIC_SEARCH_ALL_CALLBACK_PREFIX + musicSearchService.rememberQuery(query))
+          .build()));
+    }
     execute(SendMessage.builder()
         .chatId(chatId.toString())
-        .text("Не смог распознать ссылку, но нашёл похожее в Яндекс Музыке:")
+        .text(header)
         .replyMarkup(InlineKeyboardMarkup.builder().keyboard(keyboard).build())
         .build());
+  }
+
+  private List<List<InlineKeyboardButton>> trackButtons(List<TrackResult> tracks) {
+    return tracks.stream()
+        .map(track -> List.of(InlineKeyboardButton.builder()
+            .text(truncate(track.provider().getEmoji() + " " + track.display()))
+            .callbackData(MUSIC_TRACK_CALLBACK_PREFIX + musicSearchService.rememberTrack(track))
+            .build()))
+        .toList();
+  }
+
+  private void handleMusicSearchEverywhere(CallbackQuery callbackQuery, UserInfo userInfo,
+      String key) throws TelegramApiException {
+    String query = musicSearchService.findQuery(key);
+    if (query == null) {
+      answerCallback(callbackQuery, "Поиск устарел — отправьте название ещё раз", true);
+      return;
+    }
+    answerCallback(callbackQuery, "Ищу везде…");
+    List<TrackResult> tracks = musicSearchService.searchEverywhere(query,
+        userInfo.getMusicProvider());
+    String legend = musicSearchService.availableProviders().stream()
+        .map(provider -> provider.getEmoji() + " " + provider.getTitle())
+        .reduce((a, b) -> a + "  " + b)
+        .orElse("");
+    execute(EditMessageText.builder()
+        .chatId(callbackQuery.getMessage().getChatId().toString())
+        .messageId(callbackQuery.getMessage().getMessageId())
+        .text(tracks.isEmpty() ? "Больше ничего не нашлось :(" : "Результаты со всех сервисов:\n"
+            + legend)
+        .replyMarkup(tracks.isEmpty() ? null
+            : InlineKeyboardMarkup.builder().keyboard(trackButtons(tracks)).build())
+        .build());
+  }
+
+  private void handleMusicTrack(Long chatId, UserInfo userInfo, String key) {
+    TrackResult track = musicSearchService.findTrack(key);
+    if (track == null) {
+      trySendText(chatId, "Результат поиска устарел — отправьте название ещё раз");
+      return;
+    }
+    Quality quality = userInfo.getQuality();
+    RequestLog requestLog = requestService.saveRequest(userInfo, RequestType.TRACK,
+        track.provider().getTitle() + ": " + track.display(), quality, OutputFormat.MP3);
+    processAndSend(chatId, null, requestLog, MediaType.AUDIO, OutputFormat.MP3, quality, null,
+        () -> musicSearchService.download(track, quality));
   }
 
   private String truncate(String text) {
