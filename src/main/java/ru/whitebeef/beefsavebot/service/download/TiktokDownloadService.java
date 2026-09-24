@@ -1,6 +1,5 @@
 package ru.whitebeef.beefsavebot.service.download;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -144,14 +143,6 @@ public class TiktokDownloadService extends AbstractYtDlpDownloadService {
     @Override
     protected boolean isCompatibleAudioCodec(String codec) {
         return codec.startsWith("aac");
-    }
-
-    /**
-     * Вертикальные видео ограничиваем по меньшей стороне.
-     */
-    @Override
-    protected int dimensionOf(JsonNode format) {
-        return Math.min(format.path("width").asInt(0), format.path("height").asInt(0));
     }
 
     @Override
