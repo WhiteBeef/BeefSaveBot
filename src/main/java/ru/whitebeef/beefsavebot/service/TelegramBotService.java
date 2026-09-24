@@ -163,7 +163,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         try {
           inlineDownloadHandler.handleQuery(this, update.getInlineQuery());
         } catch (Exception e) {
-          log.warn("Ошибка инлайн-запроса: {}", e.getMessage());
+          log.error("Ошибка инлайн-запроса '{}': {}", update.getInlineQuery().getQuery(),
+              e.getMessage(), e);
         }
       });
       return;

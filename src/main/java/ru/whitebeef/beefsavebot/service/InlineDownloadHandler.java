@@ -31,6 +31,7 @@ import org.telegram.telegrambots.meta.api.objects.inlinequery.result.InlineQuery
 import org.telegram.telegrambots.meta.api.objects.inlinequery.result.InlineQueryResultsButton;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.result.cached.InlineQueryResultCachedVideo;
 import org.telegram.telegrambots.meta.api.objects.media.InputMedia;
+import org.telegram.telegrambots.meta.api.objects.media.InputMediaAnimation;
 import org.telegram.telegrambots.meta.api.objects.media.InputMediaAudio;
 import org.telegram.telegrambots.meta.api.objects.media.InputMediaDocument;
 import org.telegram.telegrambots.meta.api.objects.media.InputMediaVideo;
@@ -92,6 +93,7 @@ public class InlineDownloadHandler {
   }
 
   public void handleQuery(AbsSender bot, InlineQuery query) throws TelegramApiException {
+    log.info("Инлайн-запрос от {}: {}", query.getFrom().getId(), query.getQuery());
     LinkRequest link;
     try {
       link = LinkRequest.parse(query.getQuery());
@@ -203,7 +205,7 @@ public class InlineDownloadHandler {
       }
       bot.execute(EditMessageMedia.builder()
           .inlineMessageId(inlineMessageId)
-          .media(media(format, upload(bot, result, format)))
+          .media(media(upload(bot, result, format)))
           .build());
       requestService.markDownloaded(requestLog, size);
     } catch (UserFacingException e) {
@@ -224,7 +226,8 @@ public class InlineDownloadHandler {
   /**
    * Загружает файл в служебный чат, удаляет сообщение и возвращает file_id.
    */
-  private String upload(AbsSender bot, File file, OutputFormat format) throws TelegramApiException {
+  private Uploaded upload(AbsSender bot, File file, OutputFormat format)
+      throws TelegramApiException {
     String chatId = botConfig.getEffectiveStorageChatId();
     InputFile inputFile = new InputFile(file);
     Message message = switch (format) {
@@ -236,25 +239,46 @@ public class InlineDownloadHandler {
           .disableNotification(true).build());
     };
     deleteQuietly(bot, message);
-    return switch (format) {
-      case MP4 -> message.getVideo() != null ? message.getVideo().getFileId()
-          : message.getDocument().getFileId();
-      case MP3 -> message.getAudio().getFileId();
-      case WEBM, WEBP -> message.getDocument().getFileId();
-    };
+    return Uploaded.of(message);
   }
 
-  private InputMedia media(OutputFormat format, String fileId) {
-    InputMedia media = switch (format) {
-      case MP4 -> {
+  private enum Kind { VIDEO, ANIMATION, AUDIO, DOCUMENT }
+
+  /**
+   * Загруженный файл. Telegram сам решает, чем его считать: например, видео без звука он
+   * сохраняет как GIF-анимацию, поэтому тип берём из ответа, а не из того, как отправляли.
+   */
+  private record Uploaded(String fileId, Kind kind) {
+
+    static Uploaded of(Message message) {
+      if (message.getVideo() != null) {
+        return new Uploaded(message.getVideo().getFileId(), Kind.VIDEO);
+      }
+      if (message.getAnimation() != null) {
+        return new Uploaded(message.getAnimation().getFileId(), Kind.ANIMATION);
+      }
+      if (message.getAudio() != null) {
+        return new Uploaded(message.getAudio().getFileId(), Kind.AUDIO);
+      }
+      if (message.getDocument() != null) {
+        return new Uploaded(message.getDocument().getFileId(), Kind.DOCUMENT);
+      }
+      throw new IllegalStateException("Telegram не вернул загруженный файл");
+    }
+  }
+
+  private InputMedia media(Uploaded uploaded) {
+    InputMedia media = switch (uploaded.kind()) {
+      case VIDEO -> {
         InputMediaVideo video = new InputMediaVideo();
         video.setSupportsStreaming(true);
         yield video;
       }
-      case MP3 -> new InputMediaAudio();
-      case WEBM, WEBP -> new InputMediaDocument();
+      case ANIMATION -> new InputMediaAnimation();
+      case AUDIO -> new InputMediaAudio();
+      case DOCUMENT -> new InputMediaDocument();
     };
-    media.setMedia(fileId);
+    media.setMedia(uploaded.fileId());
     return media;
   }
 
@@ -279,9 +303,13 @@ public class InlineDownloadHandler {
       Path file = null;
       try {
         file = Files.createTempFile("placeholder_", ".mp4");
+        // Тихая звуковая дорожка обязательна: видео без звука Telegram превращает в GIF,
+        // а инлайн-результат должен быть именно видео
         Process process = new ProcessBuilder("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", "color=c=0x1f1f1f:s=320x180:d=1:r=1",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", file.toString())
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+            file.toString())
             .inheritIO().start();
         if (!process.waitFor(1, TimeUnit.MINUTES) || process.exitValue() != 0) {
           throw new IllegalStateException("ffmpeg не создал заглушку");
@@ -292,7 +320,11 @@ public class InlineDownloadHandler {
             .disableNotification(true)
             .build());
         deleteQuietly(bot, message);
+        if (message.getVideo() == null) {
+          throw new IllegalStateException("Telegram сохранил заглушку не как видео");
+        }
         placeholderFileId = message.getVideo().getFileId();
+        log.info("Заглушка для инлайн-режима готова");
       } catch (Exception e) {
         log.error("Не удалось подготовить заглушку для инлайн-режима: {}", e.getMessage(), e);
       } finally {
