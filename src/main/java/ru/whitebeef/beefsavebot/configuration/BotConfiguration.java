@@ -30,6 +30,9 @@ public class BotConfiguration {
     @Value("${telegram.bot.author:@WhiteBeef}")
     private String author;
 
+    @Value("${telegram.bot.github-url:https://github.com/WhiteBeef/BeefSaveBot}")
+    private String githubUrl;
+
     /**
      * Часовой пояс, в котором админке показываются даты.
      */

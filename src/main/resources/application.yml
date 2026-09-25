@@ -24,6 +24,7 @@ telegram:
     # Чат для загрузки видео в инлайн-режиме (по умолчанию — чат админа, сообщения сразу удаляются)
     storage-chat-id: ${TELEGRAM_STORAGE_CHAT_ID:}
     author: ${TELEGRAM_BOT_AUTHOR:@WhiteBeef}
+    github-url: ${TELEGRAM_BOT_GITHUB_URL:https://github.com/WhiteBeef/BeefSaveBot}
     timezone: ${BOT_TIMEZONE:Europe/Moscow}
 
 download:
