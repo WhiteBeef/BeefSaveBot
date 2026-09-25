@@ -937,13 +937,20 @@ public class TelegramBotService extends TelegramLongPollingBot {
             .allowSendingWithoutReply(true)
             .build());
       }
-      case MP4 -> execute(SendVideo.builder()
-          .chatId(chatId.toString())
-          .video(inputFile)
-          .supportsStreaming(true)
-          .replyToMessageId(replyTo)
-          .allowSendingWithoutReply(true)
-          .build());
+      case MP4 -> {
+        // Размеры и длительность явно: иначе плеер на iOS может показать неверные пропорции
+        MediaProcessingService.VideoInfo info = mediaProcessingService.videoInfo(file);
+        execute(SendVideo.builder()
+            .chatId(chatId.toString())
+            .video(inputFile)
+            .supportsStreaming(true)
+            .width(info == null ? null : info.width())
+            .height(info == null ? null : info.height())
+            .duration(info == null ? null : info.durationSeconds())
+            .replyToMessageId(replyTo)
+            .allowSendingWithoutReply(true)
+            .build());
+      }
       case WEBM, WEBP -> execute(SendDocument.builder()
           .chatId(chatId.toString())
           .document(inputFile)

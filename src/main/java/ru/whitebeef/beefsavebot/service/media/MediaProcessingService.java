@@ -41,7 +41,7 @@ public class MediaProcessingService {
   public File process(File input, OutputFormat format, Quality quality, CropRange crop)
       throws IOException, InterruptedException {
     if (crop == null && extensionOf(input).equals(format.getExtension())) {
-      return input;
+      return format == OutputFormat.MP4 ? ensureIosCompatible(input, quality) : input;
     }
     MediaInfo info = probe(input);
     Double start = null;
@@ -160,6 +160,77 @@ public class MediaProcessingService {
   }
 
   /**
+   * Готовит MP4 к просмотру на iPhone. Совместимые кодеки (H.264 8 бит или HEVC плюс AAC/MP3)
+   * только перепаковываются: moov переносится в начало файла (иначе iOS не начинает играть до
+   * полной загрузки), у HEVC ставится тег hvc1 (с hev1 плееры Apple его не открывают).
+   * Остальное (VP9, AV1, Opus, 10-битный H.264…) перекодируется в H.264/AAC.
+   */
+  File ensureIosCompatible(File input, Quality quality) throws IOException, InterruptedException {
+    MediaInfo info = probe(input);
+    if (!info.hasVideo()) {
+      return input;
+    }
+    boolean hevc = "hevc".equals(info.videoCodec());
+    boolean videoOk = ("h264".equals(info.videoCodec())
+        && ("yuv420p".equals(info.pixFmt()) || "yuvj420p".equals(info.pixFmt())))
+        || (hevc && info.pixFmt() != null && info.pixFmt().startsWith("yuv420p"));
+    boolean audioOk = !info.hasAudio() || "aac".equals(info.audioCodec())
+        || "mp3".equals(info.audioCodec());
+
+    Path outputDir = Files.createTempDirectory("media_");
+    File output = outputDir.resolve(baseNameOf(input) + ".mp4").toFile();
+    List<String> command = new ArrayList<>(List.of("ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-y", "-i", input.getAbsolutePath(), "-map", "0:v:0", "-map", "0:a:0?"));
+    if (videoOk) {
+      command.addAll(List.of("-c:v", "copy"));
+      if (hevc) {
+        command.addAll(List.of("-tag:v", "hvc1"));
+      }
+    } else {
+      log.info("Перекодирую видео {} ({}, {}) в H.264 для совместимости с iPhone",
+          input.getName(), info.videoCodec(), info.pixFmt());
+      command.addAll(List.of("-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264",
+          "-preset", "veryfast", "-crf", String.valueOf(quality.getX264Crf()),
+          "-pix_fmt", "yuv420p"));
+    }
+    if (audioOk) {
+      command.addAll(List.of("-c:a", "copy"));
+    } else {
+      log.info("Перекодирую звук {} ({}) в AAC", input.getName(), info.audioCodec());
+      command.addAll(List.of("-c:a", "aac", "-b:a", "160k"));
+    }
+    command.addAll(List.of("-movflags", "+faststart", output.getAbsolutePath()));
+    run(command, outputDir);
+    if (!output.exists() || output.length() == 0) {
+      YtDlpClient.deleteDirectory(outputDir);
+      throw new RuntimeException("ffmpeg не создал выходной файл");
+    }
+    return output;
+  }
+
+  /**
+   * Размеры и длительность для отправки видео в Telegram: без них плеер на iOS может показать
+   * неверные пропорции. {@code null}, если прочитать не удалось.
+   */
+  public VideoInfo videoInfo(File file) {
+    try {
+      MediaInfo info = probe(file);
+      if (!info.hasVideo() || info.width() == null || info.height() == null) {
+        return null;
+      }
+      return new VideoInfo(info.width(), info.height(),
+          info.duration() == null ? null : (int) Math.round(info.duration()));
+    } catch (Exception e) {
+      log.debug("Не удалось прочитать параметры видео {}: {}", file.getName(), e.getMessage());
+      return null;
+    }
+  }
+
+  public record VideoInfo(int width, int height, Integer durationSeconds) {
+
+  }
+
+  /**
    * Исполнитель и название для отправки аудио в Telegram. Берутся из тегов файла, а если их нет —
    * из имени вида «Исполнитель - Название».
    */
@@ -221,13 +292,28 @@ public class MediaProcessingService {
     boolean hasVideo = false;
     boolean hasAudio = false;
     Double fps = null;
+    String videoCodec = null;
+    String pixFmt = null;
+    String audioCodec = null;
+    Integer width = null;
+    Integer height = null;
     for (JsonNode stream : root.path("streams")) {
       String type = stream.path("codec_type").asText();
-      if ("audio".equals(type)) {
+      if ("audio".equals(type) && !hasAudio) {
         hasAudio = true;
+        audioCodec = stream.path("codec_name").asText(null);
       } else if ("video".equals(type)
           && stream.path("disposition").path("attached_pic").asInt(0) == 0 && !hasVideo) {
         hasVideo = true;
+        videoCodec = stream.path("codec_name").asText(null);
+        pixFmt = stream.path("pix_fmt").asText(null);
+        width = stream.path("width").asInt(0) > 0 ? stream.path("width").asInt() : null;
+        height = stream.path("height").asInt(0) > 0 ? stream.path("height").asInt() : null;
+        if (width != null && height != null && isRotated(stream)) {
+          int swap = width;
+          width = height;
+          height = swap;
+        }
         fps = parseRate(stream.path("avg_frame_rate").asText(null));
         if (fps == null) {
           fps = parseRate(stream.path("r_frame_rate").asText(null));
@@ -235,7 +321,21 @@ public class MediaProcessingService {
       }
     }
     double duration = root.path("format").path("duration").asDouble(-1);
-    return new MediaInfo(hasVideo, hasAudio, fps, duration > 0 ? duration : null);
+    return new MediaInfo(hasVideo, hasAudio, fps, duration > 0 ? duration : null, videoCodec,
+        pixFmt, audioCodec, width, height);
+  }
+
+  /**
+   * Видео с телефона часто хранится повёрнутым на 90° с пометкой о повороте.
+   */
+  private static boolean isRotated(JsonNode stream) {
+    int rotation = stream.path("tags").path("rotate").asInt(0);
+    for (JsonNode sideData : stream.path("side_data_list")) {
+      if (sideData.has("rotation")) {
+        rotation = sideData.path("rotation").asInt(0);
+      }
+    }
+    return Math.abs(rotation) % 180 == 90;
   }
 
   private Double parseRate(String rate) {
@@ -292,7 +392,9 @@ public class MediaProcessingService {
         : String.format("%d:%02d", minutes, secs);
   }
 
-  private record MediaInfo(boolean hasVideo, boolean hasAudio, Double fps, Double duration) {
+  private record MediaInfo(boolean hasVideo, boolean hasAudio, Double fps, Double duration,
+                           String videoCodec, String pixFmt, String audioCodec, Integer width,
+                           Integer height) {
 
   }
 }

@@ -232,8 +232,15 @@ public class InlineDownloadHandler {
     String chatId = botConfig.getEffectiveStorageChatId();
     InputFile inputFile = new InputFile(file);
     Message message = switch (format) {
-      case MP4 -> bot.execute(SendVideo.builder().chatId(chatId).video(inputFile)
-          .supportsStreaming(true).disableNotification(true).build());
+      case MP4 -> {
+        MediaProcessingService.VideoInfo info = mediaProcessingService.videoInfo(file);
+        yield bot.execute(SendVideo.builder().chatId(chatId).video(inputFile)
+            .supportsStreaming(true)
+            .width(info == null ? null : info.width())
+            .height(info == null ? null : info.height())
+            .duration(info == null ? null : info.durationSeconds())
+            .disableNotification(true).build());
+      }
       case MP3 -> {
         MediaProcessingService.AudioTags tags = mediaProcessingService.readAudioTags(file);
         yield bot.execute(SendAudio.builder().chatId(chatId).audio(inputFile)

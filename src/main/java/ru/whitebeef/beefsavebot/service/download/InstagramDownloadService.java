@@ -21,15 +21,19 @@ public class InstagramDownloadService extends AbstractYtDlpDownloadService {
     super(downloadConfiguration, ytDlpClient);
   }
 
+  /**
+   * Только то, что воспроизводится на iPhone: VP9/AV1 и Opus в MP4 там не играют. Если других
+   * вариантов нет, выбор отдаётся yt-dlp, а перед отправкой файл всё равно перекодируется.
+   */
   @Override
   protected boolean isCompatibleVideoCodec(String codec) {
     return codec.startsWith("avc1") || codec.startsWith("h264") || codec.startsWith("h265")
-        || codec.startsWith("vp9") || codec.startsWith("vp09") || codec.startsWith("av01");
+        || codec.startsWith("hvc1") || codec.startsWith("hev1") || codec.startsWith("hevc");
   }
 
   @Override
   protected boolean isCompatibleAudioCodec(String codec) {
-    return codec.startsWith("mp4a") || codec.startsWith("aac") || codec.startsWith("opus");
+    return codec.startsWith("mp4a") || codec.startsWith("aac");
   }
 
   @Override
