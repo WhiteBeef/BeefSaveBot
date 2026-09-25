@@ -19,10 +19,16 @@ public class DownloadConfiguration {
   private long sourceMaxBytes;
 
   /**
-   * Сколько часов хранить file_id отправленных файлов для мгновенной повторной отправки.
-   * 0 — кэш выключен.
+   * Кэш file_id отправленных файлов для мгновенной повторной отправки.
    */
-  @Value("${download.cache-hours:24}")
+  @Value("${download.cache-enabled:true}")
+  private boolean cacheEnabled;
+
+  /**
+   * Сколько часов хранить запись кэша. 0 — бессрочно: файлы лежат в Telegram, а у нас только
+   * их file_id.
+   */
+  @Value("${download.cache-hours:0}")
   private int cacheHours;
 
   @Value("${download.ffmpeg-timeout-minutes:15}")

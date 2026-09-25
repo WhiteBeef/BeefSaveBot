@@ -20,7 +20,9 @@ import ru.whitebeef.beefsavebot.service.media.CropRange;
 
 /**
  * Кэш отправленных файлов: ссылка + формат + качество (+ фрагмент) → file_id в Telegram.
- * Повторный запрос за время жизни кэша отдаётся мгновенно, без скачивания и перекодирования.
+ * Сами файлы хранятся в Telegram, поэтому по умолчанию записи бессрочные. Повторный запрос
+ * отдаётся мгновенно, без скачивания и перекодирования; если Telegram не примет file_id, запись
+ * удаляется и файл скачивается заново.
  */
 @Slf4j
 @Service
@@ -39,6 +41,10 @@ public class MediaCacheService {
   private final DownloadConfiguration downloadConfiguration;
 
   public boolean isEnabled() {
+    return downloadConfiguration.isCacheEnabled();
+  }
+
+  private boolean expires() {
     return downloadConfiguration.getCacheHours() > 0;
   }
 
@@ -89,9 +95,10 @@ public class MediaCacheService {
     if (!isEnabled() || key == null) {
       return Optional.empty();
     }
-    LocalDateTime border = LocalDateTime.now().minusHours(downloadConfiguration.getCacheHours());
+    LocalDateTime border = expires()
+        ? LocalDateTime.now().minusHours(downloadConfiguration.getCacheHours()) : null;
     return repository.findById(key)
-        .filter(entry -> entry.getCreatedAt().isAfter(border))
+        .filter(entry -> border == null || entry.getCreatedAt().isAfter(border))
         .map(entry -> new CachedMedia(entry.getFileId(), entry.getMediaKind(),
             entry.getFileSize()));
   }
@@ -123,8 +130,11 @@ public class MediaCacheService {
   @Scheduled(fixedDelay = 60 * 60 * 1000, initialDelay = 60 * 1000)
   @Transactional
   public void removeExpired() {
-    int hours = Math.max(1, downloadConfiguration.getCacheHours());
-    int removed = repository.deleteOlderThan(LocalDateTime.now().minusHours(hours));
+    if (!expires()) {
+      return;
+    }
+    int removed = repository.deleteOlderThan(
+        LocalDateTime.now().minusHours(downloadConfiguration.getCacheHours()));
     if (removed > 0) {
       log.info("Удалено устаревших записей кэша: {}", removed);
     }
