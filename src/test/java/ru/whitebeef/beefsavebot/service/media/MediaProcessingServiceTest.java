@@ -50,7 +50,101 @@ class MediaProcessingServiceTest {
 
   @Test
   void returnsSourceWhenNothingToDo() throws Exception {
-    assertSame(source, service.process(source, OutputFormat.MP4, Quality.HIGH, null));
+    File mp3 = service.process(source, OutputFormat.MP3, Quality.LOW, null);
+    assertSame(mp3, service.process(mp3, OutputFormat.MP3, Quality.LOW, null));
+  }
+
+  @Test
+  void compatibleMp4IsOnlyRemuxedWithFastStart() throws Exception {
+    // H.264 + AAC, но moov в конце файла (так склеивает yt-dlp)
+    File slow = tempDir.resolve("slow.mp4").toFile();
+    run(List.of("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i",
+        source.getAbsolutePath(), "-c", "copy", slow.getAbsolutePath()));
+    assertTrue(atomOffset(slow, "moov") > atomOffset(slow, "mdat"));
+
+    File result = service.process(slow, OutputFormat.MP4, Quality.HIGH, null);
+
+    assertEquals("slow.mp4", result.getName());
+    assertTrue(atomOffset(result, "moov") < atomOffset(result, "mdat"), "moov должен быть в начале");
+    List<String> codecs = codecs(result);
+    assertEquals(List.of("h264", "aac"), codecs);
+    // Без перекодирования: кадров столько же, яркость первого кадра та же
+    assertEquals(countFrames(slow), countFrames(result));
+  }
+
+  @Test
+  void vp9AndOpusAreTranscodedForIphone() throws Exception {
+    File webmInMp4 = tempDir.resolve("vp9.mp4").toFile();
+    run(List.of("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i",
+        source.getAbsolutePath(), "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8",
+        "-c:a", "libopus", "-strict", "-2", webmInMp4.getAbsolutePath()));
+    assertEquals(List.of("vp9", "opus"), codecs(webmInMp4));
+
+    File result = service.process(webmInMp4, OutputFormat.MP4, Quality.LOW, null);
+
+    assertEquals(List.of("h264", "aac"), codecs(result));
+    assertTrue(atomOffset(result, "moov") < atomOffset(result, "mdat"));
+  }
+
+  @Test
+  void hevcGetsAppleCompatibleTag() throws Exception {
+    File hev1 = tempDir.resolve("hevc.mp4").toFile();
+    run(List.of("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i",
+        source.getAbsolutePath(), "-c:v", "libx265", "-x265-params", "log-level=error",
+        "-tag:v", "hev1", "-c:a", "copy", hev1.getAbsolutePath()));
+
+    File result = service.process(hev1, OutputFormat.MP4, Quality.HIGH, null);
+
+    assertEquals(List.of("hevc", "aac"), codecs(result));
+    assertEquals("hvc1", probe(result).path("streams").get(0).path("codec_tag_string").asText());
+  }
+
+  @Test
+  void videoInfoAccountsForRotation() throws Exception {
+    // Горизонтальный кадр 96×32 с пометкой «повернуть на 90°», как снимает телефон
+    File landscape = tempDir.resolve("landscape.mp4").toFile();
+    run(List.of("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+        "color=c=gray:s=96x32:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        landscape.getAbsolutePath()));
+    File rotated = tempDir.resolve("rotated.mp4").toFile();
+    run(List.of("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-display_rotation", "90", "-i", landscape.getAbsolutePath(), "-c", "copy",
+        rotated.getAbsolutePath()));
+
+    MediaProcessingService.VideoInfo plain = service.videoInfo(landscape);
+    assertEquals(96, plain.width());
+    assertEquals(32, plain.height());
+    assertEquals(2, plain.durationSeconds());
+    MediaProcessingService.VideoInfo info = service.videoInfo(rotated);
+    assertEquals(32, info.width());
+    assertEquals(96, info.height());
+  }
+
+  private static List<String> codecs(File file) throws Exception {
+    List<String> codecs = new ArrayList<>();
+    probe(file).path("streams").forEach(stream -> codecs.add(stream.path("codec_name").asText()));
+    return codecs;
+  }
+
+  /**
+   * Смещение MP4-атома верхнего уровня (moov, mdat…) в файле.
+   */
+  private static long atomOffset(File file, String type) throws Exception {
+    byte[] bytes = Files.readAllBytes(file.toPath());
+    long offset = 0;
+    while (offset + 8 <= bytes.length) {
+      long size = ((bytes[(int) offset] & 0xFFL) << 24) | ((bytes[(int) offset + 1] & 0xFFL) << 16)
+          | ((bytes[(int) offset + 2] & 0xFFL) << 8) | (bytes[(int) offset + 3] & 0xFFL);
+      String atom = new String(bytes, (int) offset + 4, 4, StandardCharsets.US_ASCII);
+      if (atom.equals(type)) {
+        return offset;
+      }
+      if (size < 8) {
+        break;
+      }
+      offset += size;
+    }
+    return Long.MAX_VALUE;
   }
 
   @Test
