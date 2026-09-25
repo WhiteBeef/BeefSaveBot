@@ -53,6 +53,8 @@ jdk-install:
 
 docker-install:
 	@echo "Installing Docker (Ubuntu/Debian only)..."
-	sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+	# Официальный скрипт Docker: подключает репозиторий docker.com (в стандартных репозиториях
+	# Ubuntu пакета docker-ce нет) и ставит Docker Engine вместе с плагином Compose
+	curl -fsSL https://get.docker.com | sudo sh
 
 start: jdk-install docker-install deploy

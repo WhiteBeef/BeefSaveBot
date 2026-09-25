@@ -12,7 +12,11 @@ services:
       - "5432:5432"
 
   telegram-bot:
-    build: .
+    build:
+      context: .
+      args:
+        # false — собрать образ без LibreOffice (минус ~600 МБ, без конвертации документов)
+        INSTALL_LIBREOFFICE: ${INSTALL_LIBREOFFICE:-true}
     container_name: telegram-bot
     depends_on:
       - postgres
@@ -24,8 +28,18 @@ services:
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
       TELEGRAM_ADMIN_ID: ${TELEGRAM_ADMIN_ID:-}
       TELEGRAM_STORAGE_CHAT_ID: ${TELEGRAM_STORAGE_CHAT_ID:-}
-      YANDEX_MUSIC_TOKEN: ${YANDEX_MUSIC_TOKEN}
+      TELEGRAM_BOT_AUTHOR: ${TELEGRAM_BOT_AUTHOR:-@WhiteBeef}
+      TELEGRAM_BOT_GITHUB_URL: ${TELEGRAM_BOT_GITHUB_URL:-https://github.com/WhiteBeef/BeefSaveBot}
+      BOT_TIMEZONE: ${BOT_TIMEZONE:-Europe/Moscow}
+      YANDEX_MUSIC_TOKEN: ${YANDEX_MUSIC_TOKEN:-}
       DOWNLOAD_YT_DLP_COOKIES_FILE: ${DOWNLOAD_YT_DLP_COOKIES_FILE:-}
+      DOWNLOAD_YT_DLP_USER_AGENT: ${DOWNLOAD_YT_DLP_USER_AGENT:-}
+      DOWNLOAD_MAX_HEIGHT: ${DOWNLOAD_MAX_HEIGHT:-1080}
+      DOWNLOAD_MAX_RESOLUTION: ${DOWNLOAD_MAX_RESOLUTION:-1080}
+      DOWNLOAD_SOURCE_MAX_BYTES: ${DOWNLOAD_SOURCE_MAX_BYTES:-524288000}
+      DOWNLOAD_FFMPEG_TIMEOUT_MINUTES: ${DOWNLOAD_FFMPEG_TIMEOUT_MINUTES:-15}
+      DOWNLOAD_SLIDESHOW_SECONDS_PER_SLIDE: ${DOWNLOAD_SLIDESHOW_SECONDS_PER_SLIDE:-3}
+      DOWNLOAD_SLIDESHOW_FALLBACK_API: ${DOWNLOAD_SLIDESHOW_FALLBACK_API:-true}
     volumes:
       - ./downloads:/app/downloads
       - ./cookies:/app/cookies
