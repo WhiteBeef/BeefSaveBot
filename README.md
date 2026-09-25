@@ -122,6 +122,7 @@ make deploy
 | `DOWNLOAD_MAX_RESOLUTION` | `1080` | То же для TikTok |
 | `DOWNLOAD_SOURCE_MAX_BYTES` | `524288000` | Сколько можно скачать исходника для обрезки и MP3 (500 МБ). Результат всё равно ограничен 50 МБ — это лимит Telegram |
 | `DOWNLOAD_FFMPEG_TIMEOUT_MINUTES` | `15` | Лимит времени на обрезку и конвертацию |
+| `DOWNLOAD_CACHE_HOURS` | `24` | Сколько часов повторный запрос той же ссылки (с теми же форматом, качеством и фрагментом) отдаётся мгновенно из кэша Telegram без скачивания. `0` — выключить |
 | `DOWNLOAD_SLIDESHOW_SECONDS_PER_SLIDE` | `3` | Сколько секунд показывается слайд в видео из слайд-шоу TikTok |
 | `DOWNLOAD_SLIDESHOW_FALLBACK_API` | `true` | Разрешить запасной сторонний сервис tikwm.com для TikTok, когда не справились страница поста и yt-dlp |
 

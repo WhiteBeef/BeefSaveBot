@@ -25,6 +25,7 @@ import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.GetFile;
 import org.telegram.telegrambots.meta.api.methods.ParseMode;
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
+import org.telegram.telegrambots.meta.api.methods.send.SendAnimation;
 import org.telegram.telegrambots.meta.api.methods.send.SendAudio;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
@@ -64,6 +65,8 @@ import ru.whitebeef.beefsavebot.model.Quality;
 import ru.whitebeef.beefsavebot.model.RequestType;
 import ru.whitebeef.beefsavebot.service.admin.AdminPanel;
 import ru.whitebeef.beefsavebot.service.admin.AdminService;
+import ru.whitebeef.beefsavebot.service.cache.CachedMedia;
+import ru.whitebeef.beefsavebot.service.cache.MediaCacheService;
 import ru.whitebeef.beefsavebot.service.convert.ConversionResult;
 import ru.whitebeef.beefsavebot.service.convert.ConversionService;
 import ru.whitebeef.beefsavebot.service.convert.ConversionSession;
@@ -116,6 +119,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private final ConversionService conversionService;
   private final InlineDownloadHandler inlineDownloadHandler;
   private final MusicSearchService musicSearchService;
+  private final MediaCacheService mediaCacheService;
   /**
    * Последняя ссылка на видео в каждом групповом чате.
    */
@@ -722,6 +726,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
         crop != null || format.isAudioOnly() ? downloadConfiguration.getSourceMaxBytes()
             : downloadConfiguration.getMaxBytes());
     processAndSend(chatId, replyTo, requestLog, mediaType, format, quality, crop, null,
+        MediaCacheService.key(url, format, quality, crop),
         () -> videoDownloadService.downloadVideo(url, options));
   }
 
@@ -730,7 +735,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
     RequestLog requestLog = requestService.saveRequest(userInfo, RequestType.TRACK,
         "yandex-music-search:" + trackId, quality, OutputFormat.MP3);
     processAndSend(chatId, null, requestLog, MediaType.AUDIO, OutputFormat.MP3, quality, null,
-        null, () -> yandexMusicDownloadService.downloadTrackById(trackId, quality));
+        null, MediaCacheService.key("yandex-music:" + trackId, OutputFormat.MP3, quality, null),
+        () -> yandexMusicDownloadService.downloadTrackById(trackId, quality));
   }
 
   /**
@@ -745,10 +751,17 @@ public class TelegramBotService extends TelegramLongPollingBot {
    */
   private void processAndSend(Long chatId, Integer replyTo, RequestLog requestLog,
       MediaType mediaType, OutputFormat format, Quality quality, CropRange crop,
-      MusicFallback fallback, Downloader downloader) {
+      MusicFallback fallback, String cacheKey, Downloader downloader) {
     File source = null;
     File result = null;
     try {
+      // Тот же файл уже отправляли недавно — пересылаем по file_id без скачивания
+      Optional<CachedMedia> cached = mediaCacheService.find(cacheKey);
+      if (cached.isPresent() && sendCached(chatId, replyTo, cacheKey, cached.get())) {
+        requestService.markDownloaded(requestLog,
+            cached.get().fileSize() == null ? 0 : cached.get().fileSize());
+        return;
+      }
       String what = mediaType == MediaType.AUDIO ? "трек" : "видео";
       sendHtml(chatId, "⏳ Скачиваю " + what
           + (crop == null ? "" : " и вырезаю фрагмент " + Html.escape(crop.toString()))
@@ -757,7 +770,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
       source = downloader.download();
       result = mediaProcessingService.process(source, format, quality, crop);
       long size = Files.size(result.toPath());
-      sendMedia(chatId, replyTo, result, format, mediaType);
+      Message sent = sendMedia(chatId, replyTo, result, format, mediaType);
+      mediaCacheService.put(cacheKey, CachedMedia.of(sent));
       requestService.markDownloaded(requestLog, size);
     } catch (UserFacingException e) {
       log.warn("Запрос {} не выполнен: {}", requestLog.getUrl(), e.getMessage());
@@ -905,6 +919,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
         track.provider().getTitle() + ": " + track.display(), quality, OutputFormat.MP3);
     processAndSend(chatId, null, requestLog, MediaType.AUDIO, OutputFormat.MP3, quality, null,
         new MusicFallback(track.display(), track.provider()),
+        MediaCacheService.key(track.provider() + ":" + track.id(), OutputFormat.MP3, quality,
+            null),
         () -> musicSearchService.download(track, quality));
   }
 
@@ -913,7 +929,36 @@ public class TelegramBotService extends TelegramLongPollingBot {
         : text.substring(0, BUTTON_TEXT_LIMIT - 1) + "…";
   }
 
-  private void sendMedia(Long chatId, Integer replyTo, File file, OutputFormat format,
+  /**
+   * Отправляет файл из кэша по file_id.
+   *
+   * @return {@code false}, если Telegram его не принял (запись кэша тогда удаляется)
+   */
+  private boolean sendCached(Long chatId, Integer replyTo, String cacheKey, CachedMedia media) {
+    InputFile file = new InputFile(media.fileId());
+    String chat = chatId.toString();
+    try {
+      switch (media.kind()) {
+        case VIDEO -> execute(SendVideo.builder().chatId(chat).video(file)
+            .supportsStreaming(true).replyToMessageId(replyTo).allowSendingWithoutReply(true)
+            .build());
+        case ANIMATION -> execute(SendAnimation.builder().chatId(chat).animation(file)
+            .replyToMessageId(replyTo).allowSendingWithoutReply(true).build());
+        case AUDIO -> execute(SendAudio.builder().chatId(chat).audio(file)
+            .replyToMessageId(replyTo).allowSendingWithoutReply(true).build());
+        case DOCUMENT -> execute(SendDocument.builder().chatId(chat).document(file)
+            .replyToMessageId(replyTo).allowSendingWithoutReply(true).build());
+      }
+      log.info("Отправлено из кэша: {}", cacheKey);
+      return true;
+    } catch (TelegramApiException e) {
+      log.warn("Файл из кэша не отправился, качаю заново: {}", e.getMessage());
+      mediaCacheService.evict(cacheKey);
+      return false;
+    }
+  }
+
+  private Message sendMedia(Long chatId, Integer replyTo, File file, OutputFormat format,
       MediaType mediaType) throws TelegramApiException, IOException {
     long size = Files.size(file.toPath());
     log.info("Размер файла: {} bytes", size);
@@ -924,11 +969,11 @@ public class TelegramBotService extends TelegramLongPollingBot {
               + "или вырежьте фрагмент через /crop");
     }
     InputFile inputFile = new InputFile(file);
-    switch (format) {
+    return switch (format) {
       case MP3 -> {
         // Передаём исполнителя и название явно: так Telegram покажет их даже при кривых тегах
         MediaProcessingService.AudioTags tags = mediaProcessingService.readAudioTags(file);
-        execute(SendAudio.builder()
+        yield execute(SendAudio.builder()
             .chatId(chatId.toString())
             .audio(inputFile)
             .performer(tags.performer())
@@ -940,7 +985,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
       case MP4 -> {
         // Размеры и длительность явно: иначе плеер на iOS может показать неверные пропорции
         MediaProcessingService.VideoInfo info = mediaProcessingService.videoInfo(file);
-        execute(SendVideo.builder()
+        yield execute(SendVideo.builder()
             .chatId(chatId.toString())
             .video(inputFile)
             .supportsStreaming(true)
@@ -957,7 +1002,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
           .replyToMessageId(replyTo)
           .allowSendingWithoutReply(true)
           .build());
-    }
+    };
   }
 
   // ---------------------------------------------------------------- конвертер

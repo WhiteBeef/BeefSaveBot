@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -30,11 +31,6 @@ import org.telegram.telegrambots.meta.api.objects.inlinequery.InlineQuery;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.result.InlineQueryResult;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.result.InlineQueryResultsButton;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.result.cached.InlineQueryResultCachedVideo;
-import org.telegram.telegrambots.meta.api.objects.media.InputMedia;
-import org.telegram.telegrambots.meta.api.objects.media.InputMediaAnimation;
-import org.telegram.telegrambots.meta.api.objects.media.InputMediaAudio;
-import org.telegram.telegrambots.meta.api.objects.media.InputMediaDocument;
-import org.telegram.telegrambots.meta.api.objects.media.InputMediaVideo;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.bots.AbsSender;
@@ -48,6 +44,8 @@ import ru.whitebeef.beefsavebot.entity.UserInfo;
 import ru.whitebeef.beefsavebot.model.OutputFormat;
 import ru.whitebeef.beefsavebot.model.Quality;
 import ru.whitebeef.beefsavebot.model.RequestType;
+import ru.whitebeef.beefsavebot.service.cache.CachedMedia;
+import ru.whitebeef.beefsavebot.service.cache.MediaCacheService;
 import ru.whitebeef.beefsavebot.service.download.MediaType;
 import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 import ru.whitebeef.beefsavebot.service.download.YtDlpClient;
@@ -81,6 +79,7 @@ public class InlineDownloadHandler {
   private final MediaProcessingService mediaProcessingService;
   private final UserService userService;
   private final RequestService requestService;
+  private final MediaCacheService mediaCacheService;
 
   /**
    * Подсказки, выбранные пользователем, но ещё не скачанные: ключ — id результата.
@@ -193,6 +192,23 @@ public class InlineDownloadHandler {
         link.url() + (link.crop() == null ? "" : " " + link.crop().start().source() + " "
             + link.crop().end().source()) + " [inline]", quality, format);
 
+    String cacheKey = MediaCacheService.key(link.url(), format, quality, link.crop());
+    Optional<CachedMedia> cached = mediaCacheService.find(cacheKey);
+    if (cached.isPresent()) {
+      try {
+        bot.execute(EditMessageMedia.builder()
+            .inlineMessageId(inlineMessageId)
+            .media(cached.get().toInputMedia())
+            .build());
+        requestService.markDownloaded(requestLog, cached.get().fileSize() == null ? 0
+            : cached.get().fileSize());
+        return;
+      } catch (TelegramApiException e) {
+        log.warn("Файл из кэша не отправился, качаю заново: {}", e.getMessage());
+        mediaCacheService.evict(cacheKey);
+      }
+    }
+
     File source = null;
     File result = null;
     try {
@@ -204,9 +220,11 @@ public class InlineDownloadHandler {
         throw new UserFacingException("Файл получился больше 50 МБ. Выберите качество пониже в "
             + "настройках бота или вырежьте фрагмент");
       }
+      CachedMedia uploaded = upload(bot, result, format);
+      mediaCacheService.put(cacheKey, uploaded);
       bot.execute(EditMessageMedia.builder()
           .inlineMessageId(inlineMessageId)
-          .media(media(upload(bot, result, format)))
+          .media(uploaded.toInputMedia())
           .build());
       requestService.markDownloaded(requestLog, size);
     } catch (UserFacingException e) {
@@ -227,7 +245,7 @@ public class InlineDownloadHandler {
   /**
    * Загружает файл в служебный чат, удаляет сообщение и возвращает file_id.
    */
-  private Uploaded upload(AbsSender bot, File file, OutputFormat format)
+  private CachedMedia upload(AbsSender bot, File file, OutputFormat format)
       throws TelegramApiException {
     String chatId = botConfig.getEffectiveStorageChatId();
     InputFile inputFile = new InputFile(file);
@@ -251,47 +269,11 @@ public class InlineDownloadHandler {
           .disableNotification(true).build());
     };
     deleteQuietly(bot, message);
-    return Uploaded.of(message);
-  }
-
-  private enum Kind { VIDEO, ANIMATION, AUDIO, DOCUMENT }
-
-  /**
-   * Загруженный файл. Telegram сам решает, чем его считать: например, видео без звука он
-   * сохраняет как GIF-анимацию, поэтому тип берём из ответа, а не из того, как отправляли.
-   */
-  private record Uploaded(String fileId, Kind kind) {
-
-    static Uploaded of(Message message) {
-      if (message.getVideo() != null) {
-        return new Uploaded(message.getVideo().getFileId(), Kind.VIDEO);
-      }
-      if (message.getAnimation() != null) {
-        return new Uploaded(message.getAnimation().getFileId(), Kind.ANIMATION);
-      }
-      if (message.getAudio() != null) {
-        return new Uploaded(message.getAudio().getFileId(), Kind.AUDIO);
-      }
-      if (message.getDocument() != null) {
-        return new Uploaded(message.getDocument().getFileId(), Kind.DOCUMENT);
-      }
+    CachedMedia uploaded = CachedMedia.of(message);
+    if (uploaded == null) {
       throw new IllegalStateException("Telegram не вернул загруженный файл");
     }
-  }
-
-  private InputMedia media(Uploaded uploaded) {
-    InputMedia media = switch (uploaded.kind()) {
-      case VIDEO -> {
-        InputMediaVideo video = new InputMediaVideo();
-        video.setSupportsStreaming(true);
-        yield video;
-      }
-      case ANIMATION -> new InputMediaAnimation();
-      case AUDIO -> new InputMediaAudio();
-      case DOCUMENT -> new InputMediaDocument();
-    };
-    media.setMedia(uploaded.fileId());
-    return media;
+    return uploaded;
   }
 
   /**
