@@ -18,6 +18,13 @@ public class DownloadConfiguration {
   @Value("${download.source-max-bytes:524288000}")
   private long sourceMaxBytes;
 
+  /**
+   * Сколько часов хранить file_id отправленных файлов для мгновенной повторной отправки.
+   * 0 — кэш выключен.
+   */
+  @Value("${download.cache-hours:24}")
+  private int cacheHours;
+
   @Value("${download.ffmpeg-timeout-minutes:15}")
   private long ffmpegTimeoutMinutes;
 

@@ -3,6 +3,7 @@ package ru.whitebeef.beefsavebot.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -13,6 +14,8 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
+import ru.whitebeef.beefsavebot.service.cache.CachedMedia;
+import ru.whitebeef.beefsavebot.service.cache.MediaCacheService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -48,6 +51,7 @@ class InlineDownloadHandlerTest {
   private VideoDownloadService videoDownloadService;
   private MediaProcessingService mediaProcessingService;
   private RequestService requestService;
+  private MediaCacheService mediaCacheService;
   private InlineDownloadHandler handler;
   private final User user = new User(42L, "Test", false);
 
@@ -60,8 +64,10 @@ class InlineDownloadHandlerTest {
     UserService userService = mock(UserService.class);
     BotConfiguration config = new BotConfiguration();
     config.setAdminId("1000");
+    mediaCacheService = mock(MediaCacheService.class);
+    when(mediaCacheService.find(any())).thenReturn(Optional.empty());
     handler = new InlineDownloadHandler(config, new DownloadConfiguration(), videoDownloadService,
-        mediaProcessingService, userService, requestService);
+        mediaProcessingService, userService, requestService, mediaCacheService);
 
     UserInfo userInfo = UserInfo.builder().telegramUserId(42L).build();
     when(userService.findByTelegramId(42L)).thenReturn(Optional.of(userInfo));
@@ -107,6 +113,7 @@ class InlineDownloadHandlerTest {
     // Служебные сообщения (заглушка и видео) удаляются
     verify(bot, org.mockito.Mockito.times(2)).execute(any(DeleteMessage.class));
     verify(requestService).markDownloaded(any(), eq(5L));
+    verify(mediaCacheService).put(any(), argThat(media -> "video-id".equals(media.fileId())));
     verify(mediaProcessingService).process(any(), any(), any(),
         org.mockito.ArgumentMatchers.argThat(crop -> crop != null
             && crop.start().seconds() == 10));
@@ -140,5 +147,23 @@ class InlineDownloadHandlerTest {
     video.setFileId(fileId);
     message.setVideo(video);
     return message;
+  }
+
+  @Test
+  void cachedVideoIsSentWithoutDownloading() throws Exception {
+    when(mediaCacheService.find(any())).thenReturn(Optional.of(
+        new CachedMedia("cached-id", CachedMedia.Kind.VIDEO, 1234L)));
+    ChosenInlineQuery chosen = new ChosenInlineQuery();
+    chosen.setResultId("unknown");
+    chosen.setFrom(user);
+    chosen.setInlineMessageId("inline-3");
+    chosen.setQuery(URL);
+    handler.handleChosen(bot, chosen);
+
+    ArgumentCaptor<EditMessageMedia> edit = ArgumentCaptor.forClass(EditMessageMedia.class);
+    verify(bot).execute(edit.capture());
+    assertEquals("cached-id", edit.getValue().getMedia().getMedia());
+    verify(videoDownloadService, never()).downloadVideo(any(), any());
+    verify(requestService).markDownloaded(any(), eq(1234L));
   }
 }
