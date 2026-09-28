@@ -25,8 +25,17 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
 
   @Override
   public File downloadVideo(String url, DownloadOptions options) {
+    return downloadVideo(url, options, List.of());
+  }
+
+  /**
+   * @param additionalArgs аргументы yt-dlp для этой попытки (например, {@code --impersonate})
+   */
+  protected File downloadVideo(String url, DownloadOptions options, List<String> additionalArgs) {
+    List<String> baseArgs = new ArrayList<>(extraArgs());
+    baseArgs.addAll(additionalArgs);
     try {
-      JsonNode root = ytDlpClient.fetchMetadata(url, extraArgs());
+      JsonNode root = ytDlpClient.fetchMetadata(url, baseArgs);
       JsonNode formats = root.path("formats");
       if (!formats.isArray()) {
         throw new RuntimeException("Нет массива formats в JSON");
@@ -81,7 +90,7 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
       String fileNameBase = YtDlpClient.fileNameBase(root);
       for (Candidate candidate : candidates) {
         log.info("Попытка скачать формат {} ({}p)", candidate.formatSpec(), candidate.dimension());
-        List<String> args = new ArrayList<>(extraArgs());
+        List<String> args = new ArrayList<>(baseArgs);
         args.addAll(candidate.extraArgs());
         File file = ytDlpClient.download(url, candidate.formatSpec(),
             audioOnlyDownload ? null : "mp4", args, fileNameBase);
