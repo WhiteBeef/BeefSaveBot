@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -275,6 +276,58 @@ public class MediaProcessingService {
 
   public record AudioTags(String performer, String title) {
 
+  }
+
+  /**
+   * Режет файл на части не больше {@code limit} байт без перекодирования. Резать можно только по
+   * ключевым кадрам, поэтому части получаются неравными: если какая-то вышла больше лимита,
+   * режем мельче.
+   *
+   * @return части по порядку; все лежат в одной временной папке
+   */
+  public List<File> splitIntoParts(File input, OutputFormat format, long limit)
+      throws IOException, InterruptedException {
+    if (format == OutputFormat.WEBP) {
+      throw new UserFacingException("Анимация WEBP получилась больше 50 МБ, а резать её на части "
+          + "нельзя. Выберите качество пониже или вырежьте фрагмент");
+    }
+    MediaInfo info = probe(input);
+    if (info.duration() == null || info.duration() <= 0) {
+      throw new UserFacingException("Файл получился больше 50 МБ, и разрезать его не вышло");
+    }
+    long size = Files.size(input.toPath());
+    // Запас на неравномерный битрейт и заголовки частей
+    int parts = (int) Math.ceil(size / (limit * 0.9));
+    String extension = format.getExtension();
+    for (int attempt = 0; attempt < 5; attempt++) {
+      double segmentSeconds = info.duration() / parts;
+      Path outputDir = Files.createTempDirectory("media_");
+      List<String> command = new ArrayList<>(List.of("ffmpeg", "-hide_banner", "-loglevel",
+          "error", "-y", "-i", input.getAbsolutePath(), "-map", "0", "-c", "copy"));
+      if (format == OutputFormat.MP4 && "hevc".equals(info.videoCodec())) {
+        command.addAll(List.of("-tag:v", "hvc1"));
+      }
+      command.addAll(List.of("-f", "segment", "-segment_time", formatNumber(segmentSeconds),
+          "-reset_timestamps", "1", "-segment_format", format == OutputFormat.MP4 ? "mp4"
+              : extension));
+      if (format == OutputFormat.MP4) {
+        command.addAll(List.of("-segment_format_options", "movflags=+faststart"));
+      }
+      command.add(outputDir.resolve(baseNameOf(input) + "_part%03d." + extension).toString());
+      run(command, outputDir);
+      List<File> files;
+      try (var stream = Files.list(outputDir)) {
+        files = stream.map(Path::toFile).sorted(Comparator.comparing(File::getName)).toList();
+      }
+      if (!files.isEmpty() && files.stream().allMatch(file -> file.length() <= limit)) {
+        log.info("{} разрезан на {} частей", input.getName(), files.size());
+        return files;
+      }
+      YtDlpClient.deleteDirectory(outputDir);
+      parts = (int) Math.ceil(parts * 1.5) + 1;
+    }
+    throw new UserFacingException("Файл получился больше 50 МБ, и разрезать его на части не "
+        + "вышло. Выберите качество пониже или вырежьте фрагмент");
   }
 
   private MediaInfo probe(File file) throws IOException, InterruptedException {

@@ -80,6 +80,7 @@ import ru.whitebeef.beefsavebot.service.music.MusicSearchService;
 import ru.whitebeef.beefsavebot.service.music.TrackResult;
 import ru.whitebeef.beefsavebot.service.media.LinkRequest;
 import ru.whitebeef.beefsavebot.service.media.MediaProcessingService;
+import ru.whitebeef.beefsavebot.service.media.MediaSender;
 import ru.whitebeef.beefsavebot.service.media.TimeCode;
 import ru.whitebeef.beefsavebot.service.media.UserFacingException;
 import ru.whitebeef.beefsavebot.util.Html;
@@ -120,6 +121,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
   private final InlineDownloadHandler inlineDownloadHandler;
   private final MusicSearchService musicSearchService;
   private final MediaCacheService mediaCacheService;
+  private final MediaSender mediaSender;
   /**
    * Последняя ссылка на видео в каждом групповом чате.
    */
@@ -722,9 +724,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
     Quality quality = userInfo.getQuality();
     RequestLog requestLog = requestService.saveRequest(userInfo, requestType, requestText,
         quality, format);
-    DownloadOptions options = new DownloadOptions(quality, format.isAudioOnly(),
-        crop != null || format.isAudioOnly() ? downloadConfiguration.getSourceMaxBytes()
-            : downloadConfiguration.getMaxBytes());
+    DownloadOptions options = DownloadOptions.of(quality, format, crop != null,
+        downloadConfiguration);
     processAndSend(chatId, replyTo, requestLog, mediaType, format, quality, crop, null,
         MediaCacheService.key(url, format, quality, crop),
         () -> videoDownloadService.downloadVideo(url, options));
@@ -770,8 +771,12 @@ public class TelegramBotService extends TelegramLongPollingBot {
       source = downloader.download();
       result = mediaProcessingService.process(source, format, quality, crop);
       long size = Files.size(result.toPath());
-      Message sent = sendMedia(chatId, replyTo, result, format, mediaType);
-      mediaCacheService.put(cacheKey, CachedMedia.of(sent));
+      List<Message> sent = mediaSender.send(this, chatId.toString(), replyTo, result, format,
+          false);
+      // Файл, разрезанный на части, в кэш не кладём: там хранится один file_id
+      if (sent.size() == 1) {
+        mediaCacheService.put(cacheKey, CachedMedia.of(sent.get(0)));
+      }
       requestService.markDownloaded(requestLog, size);
     } catch (UserFacingException e) {
       log.warn("Запрос {} не выполнен: {}", requestLog.getUrl(), e.getMessage());
@@ -956,53 +961,6 @@ public class TelegramBotService extends TelegramLongPollingBot {
       mediaCacheService.evict(cacheKey);
       return false;
     }
-  }
-
-  private Message sendMedia(Long chatId, Integer replyTo, File file, OutputFormat format,
-      MediaType mediaType) throws TelegramApiException, IOException {
-    long size = Files.size(file.toPath());
-    log.info("Размер файла: {} bytes", size);
-    if (size > TELEGRAM_UPLOAD_LIMIT) {
-      throw new UserFacingException(mediaType == MediaType.AUDIO
-          ? "К сожалению трек слишком большой :(\nМаксимальный размер - 50Мб!"
-          : "Файл получился больше 50 МБ :(\nВыберите качество пониже в /settings "
-              + "или вырежьте фрагмент через /crop");
-    }
-    InputFile inputFile = new InputFile(file);
-    return switch (format) {
-      case MP3 -> {
-        // Передаём исполнителя и название явно: так Telegram покажет их даже при кривых тегах
-        MediaProcessingService.AudioTags tags = mediaProcessingService.readAudioTags(file);
-        yield execute(SendAudio.builder()
-            .chatId(chatId.toString())
-            .audio(inputFile)
-            .performer(tags.performer())
-            .title(tags.title())
-            .replyToMessageId(replyTo)
-            .allowSendingWithoutReply(true)
-            .build());
-      }
-      case MP4 -> {
-        // Размеры и длительность явно: иначе плеер на iOS может показать неверные пропорции
-        MediaProcessingService.VideoInfo info = mediaProcessingService.videoInfo(file);
-        yield execute(SendVideo.builder()
-            .chatId(chatId.toString())
-            .video(inputFile)
-            .supportsStreaming(true)
-            .width(info == null ? null : info.width())
-            .height(info == null ? null : info.height())
-            .duration(info == null ? null : info.durationSeconds())
-            .replyToMessageId(replyTo)
-            .allowSendingWithoutReply(true)
-            .build());
-      }
-      case WEBM, WEBP -> execute(SendDocument.builder()
-          .chatId(chatId.toString())
-          .document(inputFile)
-          .replyToMessageId(replyTo)
-          .allowSendingWithoutReply(true)
-          .build());
-    };
   }
 
   // ---------------------------------------------------------------- конвертер

@@ -23,7 +23,7 @@ import org.mockito.ArgumentCaptor;
 import org.telegram.telegrambots.meta.api.methods.AnswerInlineQuery;
 import org.telegram.telegrambots.meta.api.methods.send.SendVideo;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
-import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageCaption;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageMedia;
 import org.telegram.telegrambots.meta.api.objects.Chat;
 import org.telegram.telegrambots.meta.api.objects.Message;
@@ -31,7 +31,8 @@ import org.telegram.telegrambots.meta.api.objects.User;
 import org.telegram.telegrambots.meta.api.objects.Video;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.ChosenInlineQuery;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.InlineQuery;
-import org.telegram.telegrambots.meta.api.objects.inlinequery.result.cached.InlineQueryResultCachedVideo;
+import org.telegram.telegrambots.meta.api.objects.inlinequery.inputmessagecontent.InputTextMessageContent;
+import org.telegram.telegrambots.meta.api.objects.inlinequery.result.InlineQueryResultArticle;
 import org.telegram.telegrambots.meta.bots.AbsSender;
 import ru.whitebeef.beefsavebot.configuration.BotConfiguration;
 import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
@@ -40,6 +41,9 @@ import ru.whitebeef.beefsavebot.entity.UserInfo;
 import ru.whitebeef.beefsavebot.service.download.MediaType;
 import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 import ru.whitebeef.beefsavebot.service.media.MediaProcessingService;
+import ru.whitebeef.beefsavebot.service.media.MediaSender;
+import java.io.RandomAccessFile;
+import java.util.List;
 
 class InlineDownloadHandlerTest {
 
@@ -67,7 +71,8 @@ class InlineDownloadHandlerTest {
     mediaCacheService = mock(MediaCacheService.class);
     when(mediaCacheService.find(any())).thenReturn(Optional.empty());
     handler = new InlineDownloadHandler(config, new DownloadConfiguration(), videoDownloadService,
-        mediaProcessingService, userService, requestService, mediaCacheService);
+        mediaProcessingService, userService, requestService, mediaCacheService,
+        new MediaSender(mediaProcessingService));
 
     UserInfo userInfo = UserInfo.builder().telegramUserId(42L).build();
     when(userService.findByTelegramId(42L)).thenReturn(Optional.of(userInfo));
@@ -79,13 +84,11 @@ class InlineDownloadHandlerTest {
     File video = Files.writeString(tempDir.resolve("Video.mp4"), "video").toFile();
     when(videoDownloadService.downloadVideo(eq(URL), any())).thenReturn(video);
     when(mediaProcessingService.process(any(), any(), any(), any())).thenReturn(video);
-    // Первая загрузка — заглушка, вторая — само видео
-    when(bot.execute(any(SendVideo.class))).thenReturn(videoMessage("placeholder-id"),
-        videoMessage("video-id"));
+    when(bot.execute(any(SendVideo.class))).thenReturn(videoMessage("video-id"));
   }
 
   @Test
-  void queryThenChosenReplacesPlaceholderWithVideo() throws Exception {
+  void queryThenChosenReplacesTextPlaceholderWithVideo() throws Exception {
     InlineQuery query = new InlineQuery();
     query.setId("q1");
     query.setFrom(user);
@@ -94,9 +97,12 @@ class InlineDownloadHandlerTest {
 
     ArgumentCaptor<AnswerInlineQuery> answer = ArgumentCaptor.forClass(AnswerInlineQuery.class);
     verify(bot).execute(answer.capture());
-    InlineQueryResultCachedVideo result =
-        (InlineQueryResultCachedVideo) answer.getValue().getResults().getFirst();
-    assertEquals("placeholder-id", result.getVideoFileId());
+    // Текстовая заглушка: отправляется одним нажатием и не показывает чёрное видео
+    InlineQueryResultArticle result =
+        (InlineQueryResultArticle) answer.getValue().getResults().getFirst();
+    assertEquals("⏳ Скачиваю…",
+        ((InputTextMessageContent) result.getInputMessageContent()).getMessageText());
+    assertTrue(result.getReplyMarkup() != null);
     assertTrue(result.getTitle().contains("0:10"), result.getTitle());
 
     ChosenInlineQuery chosen = new ChosenInlineQuery();
@@ -110,8 +116,8 @@ class InlineDownloadHandlerTest {
     verify(bot).execute(edit.capture());
     assertEquals("inline-1", edit.getValue().getInlineMessageId());
     assertEquals("video-id", edit.getValue().getMedia().getMedia());
-    // Служебные сообщения (заглушка и видео) удаляются
-    verify(bot, org.mockito.Mockito.times(2)).execute(any(DeleteMessage.class));
+    // Служебное сообщение с видео удаляется
+    verify(bot).execute(any(DeleteMessage.class));
     verify(requestService).markDownloaded(any(), eq(5L));
     verify(mediaCacheService).put(any(), argThat(media -> "video-id".equals(media.fileId())));
     verify(mediaProcessingService).process(any(), any(), any(),
@@ -130,11 +136,44 @@ class InlineDownloadHandlerTest {
     chosen.setQuery(URL);
     handler.handleChosen(bot, chosen);
 
-    ArgumentCaptor<EditMessageCaption> caption = ArgumentCaptor.forClass(EditMessageCaption.class);
-    verify(bot).execute(caption.capture());
-    assertTrue(caption.getValue().getCaption().startsWith("⚠️"));
+    ArgumentCaptor<EditMessageText> text = ArgumentCaptor.forClass(EditMessageText.class);
+    verify(bot).execute(text.capture());
+    assertTrue(text.getValue().getText().startsWith("⚠️"));
     verify(bot, never()).execute(any(EditMessageMedia.class));
     verify(requestService).markFailed(any(), any());
+  }
+
+  @Test
+  void oversizedVideoIsSentInPartsToPrivateChat() throws Exception {
+    File big = tempDir.resolve("Big.mp4").toFile();
+    try (RandomAccessFile file = new RandomAccessFile(big, "rw")) {
+      file.setLength(MediaSender.TELEGRAM_UPLOAD_LIMIT + 1);
+    }
+    when(mediaProcessingService.process(any(), any(), any(), any())).thenReturn(big);
+    Path partsDir = Files.createDirectory(tempDir.resolve("media_parts"));
+    List<File> parts = List.of(
+        Files.writeString(partsDir.resolve("Big_part000.mp4"), "1").toFile(),
+        Files.writeString(partsDir.resolve("Big_part001.mp4"), "2").toFile());
+    when(mediaProcessingService.splitIntoParts(eq(big), any(), eq(MediaSender.TELEGRAM_UPLOAD_LIMIT)))
+        .thenReturn(parts);
+    ChosenInlineQuery chosen = new ChosenInlineQuery();
+    chosen.setResultId("unknown");
+    chosen.setFrom(user);
+    chosen.setInlineMessageId("inline-4");
+    chosen.setQuery(URL);
+    handler.handleChosen(bot, chosen);
+
+    ArgumentCaptor<SendVideo> sent = ArgumentCaptor.forClass(SendVideo.class);
+    verify(bot, org.mockito.Mockito.times(2)).execute(sent.capture());
+    assertEquals("42", sent.getAllValues().get(0).getChatId());
+    assertEquals("Часть 1/2", sent.getAllValues().get(0).getCaption());
+    assertEquals("Часть 2/2", sent.getAllValues().get(1).getCaption());
+    ArgumentCaptor<EditMessageText> text = ArgumentCaptor.forClass(EditMessageText.class);
+    verify(bot, org.mockito.Mockito.times(2)).execute(text.capture());
+    assertTrue(text.getValue().getText().contains("частями"), text.getValue().getText());
+    verify(bot, never()).execute(any(EditMessageMedia.class));
+    verify(mediaCacheService, never()).put(any(), any());
+    assertTrue(!partsDir.toFile().exists());
   }
 
   private static Message videoMessage(String fileId) {
