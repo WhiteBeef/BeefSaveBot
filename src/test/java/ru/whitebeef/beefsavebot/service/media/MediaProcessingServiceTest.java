@@ -2,6 +2,7 @@ package ru.whitebeef.beefsavebot.service.media;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -195,6 +196,43 @@ class MediaProcessingServiceTest {
         UserFacingException.class,
         () -> service.process(source, OutputFormat.MP4, Quality.HIGH, range));
     assertTrue(exception.getMessage().contains("0:04"), exception.getMessage());
+  }
+
+  @Test
+  void splitsLargeVideoIntoPlayablePartsUnderLimit() throws Exception {
+    // Ключевой кадр каждые полсекунды: резать можно только по ним
+    File video = tempDir.resolve("Long video.mp4").toFile();
+    run(List.of("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i",
+        source.getAbsolutePath(), "-c:v", "libx264", "-qp", "0", "-g", "12", "-c:a", "copy",
+        video.getAbsolutePath()));
+    long limit = video.length() / 3;
+
+    List<File> parts = service.splitIntoParts(video, OutputFormat.MP4, limit);
+
+    assertTrue(parts.size() >= 3, "частей: " + parts.size());
+    int frames = 0;
+    for (File part : parts) {
+      assertTrue(part.length() <= limit, part.getName() + ": " + part.length());
+      assertTrue(atomOffset(part, "moov") < atomOffset(part, "mdat"), "moov должен быть в начале");
+      assertEquals(List.of("h264", "aac"), codecs(part));
+      frames += countFrames(part);
+    }
+    assertEquals(countFrames(video), frames);
+    assertTrue(parts.get(0).getName().startsWith("Long video_part000"), parts.get(0).getName());
+  }
+
+  @Test
+  void splitsMp3() throws Exception {
+    File mp3 = service.process(source, OutputFormat.MP3, Quality.HIGH, null);
+    List<File> parts = service.splitIntoParts(mp3, OutputFormat.MP3, mp3.length() / 2);
+    assertTrue(parts.size() >= 2, "частей: " + parts.size());
+    assertTrue(parts.stream().allMatch(part -> part.getName().endsWith(".mp3")));
+  }
+
+  @Test
+  void webpCannotBeSplit() {
+    assertThrows(UserFacingException.class,
+        () -> service.splitIntoParts(source, OutputFormat.WEBP, 1000));
   }
 
   private static int countFrames(File file) throws Exception {

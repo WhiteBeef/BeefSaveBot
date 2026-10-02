@@ -93,6 +93,22 @@ class YoutubeDownloadServiceTest {
   }
 
   @Test
+  void prefersFormatThatFitsIntoOneMessage() throws Exception {
+    // 1080p (≈31.6 МБ) не влезает в 20 МБ — берём 720p, хотя исходник до 500 МБ разрешён
+    service.downloadVideo(URL, new DownloadOptions(Quality.HIGH, false, 500L * 1024 * 1024,
+        20_000_000));
+    verify(ytDlpClient).download(eq(URL), eq("136+140-1"), eq("mp4"), anyList(), anyString());
+  }
+
+  @Test
+  void downloadsOversizedFormatWhenNothingFits() throws Exception {
+    // Ничего не влезает в 1 МБ — качаем выбранное качество, отправим частями
+    service.downloadVideo(URL, new DownloadOptions(Quality.HIGH, false, 500L * 1024 * 1024,
+        1_000_000));
+    verify(ytDlpClient).download(eq(URL), eq("137+140-1"), eq("mp4"), anyList(), anyString());
+  }
+
+  @Test
   void audioOnlyDownloadsOriginalTrack() throws Exception {
     service.downloadVideo(URL, new DownloadOptions(Quality.HIGH, true, MAX_BYTES));
     verify(ytDlpClient).download(eq(URL), eq("140-1"), isNull(), anyList(), anyString());

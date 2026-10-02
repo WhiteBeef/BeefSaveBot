@@ -71,7 +71,7 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
         // а звук потом извлечёт ffmpeg
         Quality quality = options.audioOnly() ? Quality.LOW : options.quality();
         candidates = videoCandidates(muxeds, videos, audios, audioTrack, duration, quality,
-            options.maxSourceBytes());
+            options.maxSourceBytes(), options.fitBytes());
       }
       if (candidates.isEmpty()) {
         // Форматы описаны не полностью (так бывает у Instagram) — пусть yt-dlp выберет сам,
@@ -79,9 +79,11 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
         int preferred = Math.min(maxDimension(), options.quality().getMaxHeight());
         log.info("Подходящих форматов не нашлось, выбор формата доверяем yt-dlp");
         long max = options.maxSourceBytes();
+        long fit = options.fitBytes();
         candidates = List.of(new Candidate(options.audioOnly() && !audios.isEmpty()
             ? "ba[filesize<?" + max + "]/b[filesize<?" + max + "]"
-            : "bv*[filesize<?" + max + "]+ba/b[filesize<?" + max + "]", 0, -1,
+            : "bv*[filesize<?" + fit + "]+ba/b[filesize<?" + fit + "]/bv*[filesize<?" + max
+                + "]+ba/b[filesize<?" + max + "]", 0, -1,
             List.of("-S", "res:" + preferred + ",ext:mp4:m4a,vcodec:h264")));
         audioOnlyDownload = options.audioOnly() && !audios.isEmpty();
       }
@@ -123,7 +125,7 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
 
   private List<Candidate> videoCandidates(List<JsonNode> muxeds, List<JsonNode> videos,
       List<JsonNode> audios, List<JsonNode> audioTrack, double duration, Quality quality,
-      long maxBytes) {
+      long maxBytes, long fitBytes) {
     int maxDimension = maxDimension();
     List<Candidate> candidates = new ArrayList<>();
 
@@ -169,9 +171,11 @@ public abstract class AbstractYtDlpDownloadService implements DownloadService {
     }
 
     int preferred = Math.min(maxDimension, quality.getMaxHeight());
-    // Сначала лучшее разрешение, не превышающее выбранное качество, затем ближайшее большее
+    // Сначала варианты, которые уйдут одним файлом (больший придётся резать на части). Среди них
+    // лучшее разрешение, не превышающее выбранное качество, затем ближайшее большее
     candidates.sort(Comparator
-        .comparingInt((Candidate c) -> c.dimension() <= preferred ? 0 : 1)
+        .comparingInt((Candidate c) -> c.size() <= fitBytes ? 0 : 1)
+        .thenComparingInt(c -> c.dimension() <= preferred ? 0 : 1)
         .thenComparingInt(c -> c.dimension() <= preferred ? -c.dimension() : c.dimension())
         .thenComparing(Comparator.comparingLong(Candidate::size).reversed()));
     return candidates;

@@ -2,7 +2,6 @@ package ru.whitebeef.beefsavebot.service;
 
 import java.io.File;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -10,27 +9,23 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.AnswerInlineQuery;
-import org.telegram.telegrambots.meta.api.methods.send.SendAudio;
-import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
-import org.telegram.telegrambots.meta.api.methods.send.SendVideo;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
-import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageCaption;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageMedia;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
-import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.User;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.ChosenInlineQuery;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.InlineQuery;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.result.InlineQueryResult;
 import org.telegram.telegrambots.meta.api.objects.inlinequery.result.InlineQueryResultsButton;
-import org.telegram.telegrambots.meta.api.objects.inlinequery.result.cached.InlineQueryResultCachedVideo;
+import org.telegram.telegrambots.meta.api.objects.inlinequery.inputmessagecontent.InputTextMessageContent;
+import org.telegram.telegrambots.meta.api.objects.inlinequery.result.InlineQueryResultArticle;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.bots.AbsSender;
@@ -51,15 +46,20 @@ import ru.whitebeef.beefsavebot.service.download.VideoDownloadService;
 import ru.whitebeef.beefsavebot.service.download.YtDlpClient;
 import ru.whitebeef.beefsavebot.service.media.LinkRequest;
 import ru.whitebeef.beefsavebot.service.media.MediaProcessingService;
+import ru.whitebeef.beefsavebot.service.media.MediaSender;
 import ru.whitebeef.beefsavebot.service.media.UserFacingException;
 
 /**
  * Инлайн-режим: в любом чате пишем {@code @бот ссылка [начало конец]}, выбираем подсказку — в
- * чат уходит сообщение-заглушка «Скачиваю…», которое бот потом заменяет на видео.
+ * чат уходит текстовая заглушка «Скачиваю…», которую бот потом заменяет на видео.
  * <p>
- * Как это устроено: в инлайн-сообщение нельзя загрузить новый файл, можно только подставить уже
- * загруженный по file_id. Поэтому бот загружает результат в служебный чат, берёт file_id,
- * удаляет служебное сообщение и редактирует инлайн-сообщение.
+ * Заглушка именно текстовая: видео-результат на телефонах сначала открывается в превью, и
+ * отправлять приходится двумя нажатиями, а до замены в чате висит пустой чёрный ролик.
+ * <p>
+ * В инлайн-сообщение нельзя загрузить новый файл, можно только подставить уже загруженный по
+ * file_id. Поэтому бот загружает результат в служебный чат, берёт file_id, удаляет служебное
+ * сообщение и редактирует инлайн-сообщение. Файл больше 50 МБ в одно сообщение не влезет —
+ * его части бот присылает в личку.
  * <p>
  * Скачивание запускается по событию выбора подсказки (нужно включить inline feedback в
  * BotFather) или по кнопке на заглушке, если feedback выключен.
@@ -71,7 +71,6 @@ public class InlineDownloadHandler {
 
   public static final String CALLBACK_PREFIX = "inl:";
   private static final Duration PENDING_TTL = Duration.ofMinutes(15);
-  private static final long TELEGRAM_UPLOAD_LIMIT = 50L * 1024 * 1024;
 
   private final BotConfiguration botConfig;
   private final DownloadConfiguration downloadConfiguration;
@@ -80,12 +79,12 @@ public class InlineDownloadHandler {
   private final UserService userService;
   private final RequestService requestService;
   private final MediaCacheService mediaCacheService;
+  private final MediaSender mediaSender;
 
   /**
    * Подсказки, выбранные пользователем, но ещё не скачанные: ключ — id результата.
    */
   private final Map<String, Pending> pending = new ConcurrentHashMap<>();
-  private volatile String placeholderFileId;
 
   private record Pending(LinkRequest link, long userId, Instant createdAt) {
 
@@ -115,8 +114,9 @@ public class InlineDownloadHandler {
       answer(bot, query, List.of(), "⛔ Доступ к боту ограничен");
       return;
     }
-    String placeholder = placeholder(bot);
-    if (placeholder == null) {
+    if (botConfig.getEffectiveStorageChatId() == null) {
+      log.warn("Инлайн-режим недоступен: не задан TELEGRAM_ADMIN_ID или "
+          + "TELEGRAM_STORAGE_CHAT_ID");
       answer(bot, query, List.of(), "Инлайн-режим не настроен");
       return;
     }
@@ -125,12 +125,15 @@ public class InlineDownloadHandler {
     String key = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
     pending.put(key, new Pending(link, query.getFrom().getId(), Instant.now()));
     String title = "📥 Скачать " + (link.crop() == null ? "видео" : "фрагмент " + link.crop());
-    InlineQueryResultCachedVideo result = InlineQueryResultCachedVideo.builder()
+    // Кнопка обязательна: без клавиатуры Telegram не сообщает id инлайн-сообщения
+    InlineQueryResultArticle result = InlineQueryResultArticle.builder()
         .id(key)
-        .videoFileId(placeholder)
         .title(title)
         .description(link.url())
-        .caption("⏳ Скачиваю…")
+        .inputMessageContent(InputTextMessageContent.builder()
+            .messageText("⏳ Скачиваю…")
+            .disableWebPagePreview(true)
+            .build())
         .replyMarkup(InlineKeyboardMarkup.builder()
             .keyboardRow(List.of(InlineKeyboardButton.builder()
                 .text("⏳ Загрузка… (нажмите, если не началась)")
@@ -155,7 +158,7 @@ public class InlineDownloadHandler {
         }
         request = new Pending(link, chosen.getFrom().getId(), Instant.now());
       } catch (UserFacingException e) {
-        editCaption(bot, chosen.getInlineMessageId(), "⚠️ " + e.getMessage());
+        editText(bot, chosen.getInlineMessageId(), "⚠️ " + e.getMessage());
         return;
       }
     }
@@ -216,9 +219,10 @@ public class InlineDownloadHandler {
           DownloadOptions.of(quality, format, link.crop() != null, downloadConfiguration));
       result = mediaProcessingService.process(source, format, quality, link.crop());
       long size = Files.size(result.toPath());
-      if (size > TELEGRAM_UPLOAD_LIMIT) {
-        throw new UserFacingException("Файл получился больше 50 МБ. Выберите качество пониже в "
-            + "настройках бота или вырежьте фрагмент");
+      if (size > MediaSender.TELEGRAM_UPLOAD_LIMIT) {
+        sendPartsToPrivateChat(bot, inlineMessageId, user, result, format);
+        requestService.markDownloaded(requestLog, size);
+        return;
       }
       CachedMedia uploaded = upload(bot, result, format);
       mediaCacheService.put(cacheKey, uploaded);
@@ -229,11 +233,11 @@ public class InlineDownloadHandler {
       requestService.markDownloaded(requestLog, size);
     } catch (UserFacingException e) {
       requestService.markFailed(requestLog, e.getMessage());
-      editCaption(bot, inlineMessageId, "⚠️ " + e.getMessage());
+      editText(bot, inlineMessageId, "⚠️ " + e.getMessage());
     } catch (Exception e) {
       log.error("Ошибка инлайн-скачивания {}: {}", link.url(), e.getMessage(), e);
       requestService.markFailed(requestLog, e.getClass().getSimpleName() + ": " + e.getMessage());
-      editCaption(bot, inlineMessageId, "⚠️ Не получилось скачать видео. Попробуйте ещё раз");
+      editText(bot, inlineMessageId, "⚠️ Не получилось скачать видео. Попробуйте ещё раз");
     } finally {
       cleanup(result);
       if (source != result) {
@@ -243,91 +247,36 @@ public class InlineDownloadHandler {
   }
 
   /**
+   * Файл больше 50 МБ: инлайн-сообщение может показать только один файл, поэтому части уходят
+   * в личку с ботом. Писать первым бот может только тем, кто его уже запускал.
+   */
+  private void sendPartsToPrivateChat(AbsSender bot, String inlineMessageId, User user,
+      File file, OutputFormat format) throws Exception {
+    editText(bot, inlineMessageId, "⏳ Видео больше 50 МБ — режу на части и отправляю в личку "
+        + "с ботом…");
+    try {
+      mediaSender.send(bot, user.getId().toString(), null, file, format, false);
+    } catch (TelegramApiException e) {
+      log.warn("Не удалось отправить части в личку {}: {}", user.getId(), e.getMessage());
+      throw new UserFacingException("Видео больше 50 МБ, его можно прислать только частями в "
+          + "личку. Запустите бота (/start) в личных сообщениях и отправьте ссылку туда");
+    }
+    editText(bot, inlineMessageId, "📨 Видео больше 50 МБ — отправил его частями в личку с "
+        + "ботом");
+  }
+
+  /**
    * Загружает файл в служебный чат, удаляет сообщение и возвращает file_id.
    */
-  private CachedMedia upload(AbsSender bot, File file, OutputFormat format)
-      throws TelegramApiException {
-    String chatId = botConfig.getEffectiveStorageChatId();
-    InputFile inputFile = new InputFile(file);
-    Message message = switch (format) {
-      case MP4 -> {
-        MediaProcessingService.VideoInfo info = mediaProcessingService.videoInfo(file);
-        yield bot.execute(SendVideo.builder().chatId(chatId).video(inputFile)
-            .supportsStreaming(true)
-            .width(info == null ? null : info.width())
-            .height(info == null ? null : info.height())
-            .duration(info == null ? null : info.durationSeconds())
-            .disableNotification(true).build());
-      }
-      case MP3 -> {
-        MediaProcessingService.AudioTags tags = mediaProcessingService.readAudioTags(file);
-        yield bot.execute(SendAudio.builder().chatId(chatId).audio(inputFile)
-            .performer(tags.performer()).title(tags.title())
-            .disableNotification(true).build());
-      }
-      case WEBM, WEBP -> bot.execute(SendDocument.builder().chatId(chatId).document(inputFile)
-          .disableNotification(true).build());
-    };
+  private CachedMedia upload(AbsSender bot, File file, OutputFormat format) throws Exception {
+    Message message = mediaSender.send(bot, botConfig.getEffectiveStorageChatId(), null, file,
+        format, true).get(0);
     deleteQuietly(bot, message);
     CachedMedia uploaded = CachedMedia.of(message);
     if (uploaded == null) {
       throw new IllegalStateException("Telegram не вернул загруженный файл");
     }
     return uploaded;
-  }
-
-  /**
-   * file_id маленького видео-заглушки: инлайн-сообщение должно быть медиа, чтобы его потом можно
-   * было заменить на видео.
-   */
-  private String placeholder(AbsSender bot) {
-    if (placeholderFileId != null) {
-      return placeholderFileId;
-    }
-    synchronized (this) {
-      if (placeholderFileId != null) {
-        return placeholderFileId;
-      }
-      String chatId = botConfig.getEffectiveStorageChatId();
-      if (chatId == null) {
-        log.warn("Инлайн-режим недоступен: не задан TELEGRAM_ADMIN_ID или "
-            + "TELEGRAM_STORAGE_CHAT_ID");
-        return null;
-      }
-      Path file = null;
-      try {
-        file = Files.createTempFile("placeholder_", ".mp4");
-        // Тихая звуковая дорожка обязательна: видео без звука Telegram превращает в GIF,
-        // а инлайн-результат должен быть именно видео
-        Process process = new ProcessBuilder("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", "color=c=0x1f1f1f:s=320x180:d=1:r=1",
-            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
-            file.toString())
-            .inheritIO().start();
-        if (!process.waitFor(1, TimeUnit.MINUTES) || process.exitValue() != 0) {
-          throw new IllegalStateException("ffmpeg не создал заглушку");
-        }
-        Message message = bot.execute(SendVideo.builder()
-            .chatId(chatId)
-            .video(new InputFile(file.toFile(), "loading.mp4"))
-            .disableNotification(true)
-            .build());
-        deleteQuietly(bot, message);
-        if (message.getVideo() == null) {
-          throw new IllegalStateException("Telegram сохранил заглушку не как видео");
-        }
-        placeholderFileId = message.getVideo().getFileId();
-        log.info("Заглушка для инлайн-режима готова");
-      } catch (Exception e) {
-        log.error("Не удалось подготовить заглушку для инлайн-режима: {}", e.getMessage(), e);
-      } finally {
-        if (file != null) {
-          file.toFile().delete();
-        }
-      }
-      return placeholderFileId;
-    }
   }
 
   private void answer(AbsSender bot, InlineQuery query, List<InlineQueryResult> results,
@@ -347,11 +296,11 @@ public class InlineDownloadHandler {
     bot.execute(answer.build());
   }
 
-  private void editCaption(AbsSender bot, String inlineMessageId, String text) {
+  private void editText(AbsSender bot, String inlineMessageId, String text) {
     try {
-      bot.execute(EditMessageCaption.builder()
+      bot.execute(EditMessageText.builder()
           .inlineMessageId(inlineMessageId)
-          .caption(text)
+          .text(text)
           .build());
     } catch (TelegramApiException e) {
       log.warn("Не удалось обновить инлайн-сообщение: {}", e.getMessage());
