@@ -21,6 +21,11 @@ import org.junit.jupiter.api.io.TempDir;
 import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
 import ru.whitebeef.beefsavebot.dto.DownloadOptions;
 import ru.whitebeef.beefsavebot.model.Quality;
+import ru.whitebeef.beefsavebot.service.media.SlideshowBuilder;
+import java.util.List;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 
 class InstagramDownloadServiceTest {
 
@@ -31,6 +36,8 @@ class InstagramDownloadServiceTest {
   Path tempDir;
   private YtDlpClient ytDlpClient;
   private InstagramDirectFetcher directFetcher;
+  private InstagramPostFetcher postFetcher;
+  private SlideshowBuilder slideshowBuilder;
   private InstagramDownloadService service;
 
   @BeforeEach
@@ -39,7 +46,10 @@ class InstagramDownloadServiceTest {
     configuration.setMaxHeight(1080);
     ytDlpClient = mock(YtDlpClient.class);
     directFetcher = mock(InstagramDirectFetcher.class);
-    service = new InstagramDownloadService(configuration, ytDlpClient, directFetcher);
+    postFetcher = mock(InstagramPostFetcher.class);
+    slideshowBuilder = mock(SlideshowBuilder.class);
+    service = new InstagramDownloadService(configuration, ytDlpClient, directFetcher,
+        postFetcher, slideshowBuilder);
     File file = Files.createFile(tempDir.resolve("reel.mp4")).toFile();
     when(ytDlpClient.download(anyString(), anyString(), any(), anyList(), anyString()))
         .thenReturn(file);
@@ -145,5 +155,56 @@ class InstagramDownloadServiceTest {
     assertEquals("Abc-123", InstagramDirectFetcher.shortcode(
         "https://www.instagram.com/some.user/p/Abc-123/"));
     assertEquals("Xyz", InstagramDirectFetcher.shortcode("https://instagram.com/reels/Xyz"));
+  }
+
+  @Test
+  void photoPostWithMusicBecomesSlideshow() throws Exception {
+    String postUrl = "https://www.instagram.com/p/DPhoto123/";
+    when(postFetcher.fetch(postUrl)).thenReturn(new InstagramPostFetcher.Post("Отпуск #summer",
+        "user", List.of(new InstagramPostFetcher.Item(false, "https://img/1.jpg"),
+        new InstagramPostFetcher.Item(false, "https://img/2.jpg")),
+        new InstagramPostFetcher.Music("https://music/track.m4a", 12_000L, 15_000L, "Song",
+            "Artist")));
+    doAnswer(invocation -> Files.writeString(invocation.getArgument(1), "data"))
+        .when(directFetcher).download(anyString(), any());
+    File video = tempDir.resolve("Отпуск.mp4").toFile();
+    when(slideshowBuilder.build(anyList(), any(), anyDouble(), any(), any(), any(), anyString()))
+        .thenReturn(video);
+
+    File result = service.downloadVideo(postUrl,
+        new DownloadOptions(Quality.HIGH, false, MAX_BYTES));
+
+    assertEquals(video, result);
+    verify(slideshowBuilder).build(argThat(images -> images.size() == 2),
+        argThat(music -> music != null), eq(12.0), eq(15.0), eq(Quality.HIGH), any(),
+        eq("Отпуск"));
+    verify(ytDlpClient, never()).fetchMetadata(anyString(), anyList());
+  }
+
+  @Test
+  void reelDoesNotAskForPostContentsWhenYtDlpWorks() throws Exception {
+    when(ytDlpClient.fetchMetadata(anyString(), anyList())).thenReturn(new ObjectMapper()
+        .readTree("""
+            {"title": "reel", "duration": 20, "formats": [
+              {"format_id": "2", "width": 1080, "height": 1920, "url": "https://b.mp4"}
+            ]}"""));
+    service.downloadVideo(URL, new DownloadOptions(Quality.HIGH, false, MAX_BYTES));
+    verify(postFetcher, never()).fetch(anyString());
+  }
+
+  @Test
+  void parsesHelperOutput() {
+    InstagramPostFetcher fetcher = new InstagramPostFetcher(new DownloadConfiguration());
+    InstagramPostFetcher.Post post = fetcher.parse("""
+        WARNING: something
+        {"title": "Hi", "username": "u", "items": [{"type": "image", "url": "https://i/1.jpg"},
+         {"type": "video", "url": "https://v/1.mp4"}], "music": {"url": "https://m/1.m4a",
+         "start_ms": 5000, "duration_ms": null, "title": "Song", "artist": null}}""".replace("\n ", " "));
+    assertEquals(List.of("https://i/1.jpg"), post.imageUrls());
+    assertEquals("https://v/1.mp4", post.firstVideoUrl());
+    assertEquals(5000L, post.music().startMs());
+    assertNull(post.music().durationMs());
+    assertNull(fetcher.parse("{\"error\": \"blocked\"}"));
+    assertNull(fetcher.parse(""));
   }
 }

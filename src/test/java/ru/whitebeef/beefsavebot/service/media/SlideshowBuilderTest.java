@@ -62,6 +62,21 @@ class SlideshowBuilderTest {
     assertEquals(3.0, probe.path("format").path("duration").asDouble(), 0.2);
   }
 
+  @Test
+  void singlePhotoLastsAsLongAsPostMusic() throws Exception {
+    Path audio = tempDir.resolve("track.m4a");
+    run(List.of("ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=duration=20",
+        "-c:a", "aac", audio.toString()));
+
+    // Как фото-пост Instagram: одна картинка, музыка с 5-й секунды и звучит 7 секунд
+    File video = builder.build(List.of(image("photo.jpg", "1080x1350", "yellow")), audio, 5,
+        7.0, Quality.LOW, tempDir, "photo");
+
+    JsonNode probe = probe(video);
+    assertEquals(2, probe.path("streams").size());
+    assertEquals(7.0, probe.path("format").path("duration").asDouble(), 0.2);
+  }
+
   private Path image(String name, String size, String color) throws Exception {
     Path file = tempDir.resolve(name);
     run(List.of("ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
