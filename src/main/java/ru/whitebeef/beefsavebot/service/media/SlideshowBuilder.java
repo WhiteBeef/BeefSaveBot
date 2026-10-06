@@ -25,6 +25,10 @@ public class SlideshowBuilder {
   private static final double TRANSITION_SECONDS = 0.5;
   private static final int FPS = 30;
   public static final int MAX_SLIDES = 60;
+  /**
+   * Дольше этого слайды не растягиваются под музыку.
+   */
+  public static final double MAX_TARGET_SECONDS = 90;
 
   private final DownloadConfiguration downloadConfiguration;
 
@@ -33,6 +37,17 @@ public class SlideshowBuilder {
    */
   public File build(List<Path> images, Path audio, Quality quality, Path outputDir,
       String baseName) throws IOException, InterruptedException {
+    return build(images, audio, 0, null, quality, outputDir, baseName);
+  }
+
+  /**
+   * @param audioStartSeconds с какого места играет музыка
+   * @param targetSeconds     желаемая длина видео (например, длина музыки) или {@code null}:
+   *                          слайды растягиваются, чтобы видео было не короче
+   */
+  public File build(List<Path> images, Path audio, double audioStartSeconds,
+      Double targetSeconds, Quality quality, Path outputDir, String baseName)
+      throws IOException, InterruptedException {
     if (images.isEmpty()) {
       throw new UserFacingException("В слайд-шоу нет картинок");
     }
@@ -44,6 +59,12 @@ public class SlideshowBuilder {
     };
     int height = width * 16 / 9;
     double slideSeconds = Math.max(1, downloadConfiguration.getSlideSeconds());
+    if (targetSeconds != null && targetSeconds > 0) {
+      double target = Math.min(targetSeconds, MAX_TARGET_SECONDS);
+      int count = slides.size();
+      slideSeconds = Math.max(slideSeconds,
+          (target + (count - 1) * TRANSITION_SECONDS) / count);
+    }
     double transition = slides.size() > 1 ? Math.min(TRANSITION_SECONDS, slideSeconds / 2) : 0;
     double total = slides.size() * slideSeconds - (slides.size() - 1) * transition;
 
@@ -54,6 +75,9 @@ public class SlideshowBuilder {
           "-t", number(slideSeconds), "-i", slide.toString()));
     }
     if (audio != null) {
+      if (audioStartSeconds > 0) {
+        command.addAll(List.of("-ss", number(audioStartSeconds)));
+      }
       command.addAll(List.of("-stream_loop", "-1", "-i", audio.toString()));
     }
 

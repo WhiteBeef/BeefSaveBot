@@ -58,6 +58,13 @@ public class DownloadConfiguration {
   @Value("${download.yt-dlp.cookies-file:}")
   private String ytDlpCookiesFile;
 
+  /**
+   * Python, в котором установлен yt-dlp: через него читаются фото-посты Instagram. Пусто —
+   * Python из venv в Docker-образе, а если его нет — python3.
+   */
+  @Value("${download.yt-dlp.python:}")
+  private String ytDlpPython;
+
   @Value("${download.yandex-music.token:}")
   private String yandexMusicToken;
 }
