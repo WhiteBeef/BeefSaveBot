@@ -1,0 +1,105 @@
+{
+  "auth": {"type": "static", "headers": {"X-Api-Key": "{{secret.api_key}}"}},
+  "secrets": [{"key": "api_key", "label": "API_KEY бота (из его .env)"}],
+  "actions": [
+    {
+      "name": "info",
+      "description": "Что умеет BeefSaveBot: сайты для видео, форматы (MP4, MP3, WEBM, WEBP), качество, музыкальные сервисы, из каких форматов конвертирует.",
+      "steps": [{"name": "info", "method": "GET", "url": "/api/v1/info"}]
+    },
+    {
+      "name": "send_media",
+      "description": "Скачать видео или звук по ссылке (YouTube, TikTok, Instagram, Яндекс Музыка, SoundCloud…) и прислать человеку в Telegram файлом до 50 МБ (больше — частями). start/end — вырезать фрагмент. Идёт в фоне: ответ — номер задачи (job_status). Только для Telegram.",
+      "params": [
+        {"name": "url", "type": "string", "description": "Ссылка на видео или трек", "required": true},
+        {"name": "format", "type": "string", "description": "MP4 (по умолчанию для видео), MP3 — только звук, WEBM, WEBP — анимация", "enum": ["MP4", "MP3", "WEBM", "WEBP"]},
+        {"name": "quality", "type": "string", "description": "Качество, по умолчанию MEDIUM", "enum": ["LOW", "MEDIUM", "HIGH"]},
+        {"name": "start", "type": "string", "description": "Начало фрагмента: 1:23 или 0:01:23:12 (с кадром)"},
+        {"name": "end", "type": "string", "description": "Конец фрагмента"}
+      ],
+      "steps": [{"name": "send", "method": "POST", "url": "/api/v1/media",
+        "body": {"url": "{{arg.url}}", "format": "{{arg.format}}", "quality": "{{arg.quality}}",
+                 "start": "{{arg.start}}", "end": "{{arg.end}}", "deliver": "telegram",
+                 "chatId": "{{user.telegram_chat_id}}"}}]
+    },
+    {
+      "name": "get_media_file",
+      "description": "То же, что send_media, но файл приходит прямо в ответ (в веб-чат Turby) — только если он не больше 4 МБ: короткий звук, обрезанный фрагмент. Больше — ошибка 413, тогда send_media в Telegram.",
+      "params": [
+        {"name": "url", "type": "string", "description": "Ссылка на видео или трек", "required": true},
+        {"name": "format", "type": "string", "enum": ["MP4", "MP3", "WEBM", "WEBP"]},
+        {"name": "quality", "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+        {"name": "start", "type": "string", "description": "Начало фрагмента"},
+        {"name": "end", "type": "string", "description": "Конец фрагмента"}
+      ],
+      "steps": [{"name": "get", "method": "POST", "url": "/api/v1/media",
+        "body": {"url": "{{arg.url}}", "format": "{{arg.format}}", "quality": "{{arg.quality}}",
+                 "start": "{{arg.start}}", "end": "{{arg.end}}", "deliver": "inline"}}]
+    },
+    {
+      "name": "search_music",
+      "description": "Найти треки по названию или исполнителю (Яндекс Музыка, SoundCloud, YouTube Music). У каждого — key для send_track / get_track_file.",
+      "params": [
+        {"name": "query", "type": "string", "description": "Название, исполнитель", "required": true},
+        {"name": "provider", "type": "string", "description": "Где искать сначала", "enum": ["YANDEX", "SOUNDCLOUD", "YOUTUBE_MUSIC"]}
+      ],
+      "steps": [{"name": "search", "method": "GET", "url": "/api/v1/music/search?q={{arg.query}}&provider={{arg.provider}}"}]
+    },
+    {
+      "name": "send_track",
+      "description": "Прислать трек MP3 в Telegram человеку: по key из search_music или первый найденный по query. Идёт в фоне — номер задачи.",
+      "params": [
+        {"name": "key", "type": "string", "description": "key из search_music"},
+        {"name": "query", "type": "string", "description": "Или название — возьмётся первый найденный"},
+        {"name": "quality", "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]}
+      ],
+      "steps": [{"name": "send", "method": "POST", "url": "/api/v1/music",
+        "body": {"key": "{{arg.key}}", "query": "{{arg.query}}", "quality": "{{arg.quality}}",
+                 "deliver": "telegram", "chatId": "{{user.telegram_chat_id}}"}}]
+    },
+    {
+      "name": "get_track_file",
+      "description": "Трек MP3 прямо в ответ (веб-чат) — если не больше 4 МБ (обычно LOW-качество); иначе send_track.",
+      "params": [
+        {"name": "key", "type": "string", "description": "key из search_music"},
+        {"name": "query", "type": "string", "description": "Или название"},
+        {"name": "quality", "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]}
+      ],
+      "steps": [{"name": "get", "method": "POST", "url": "/api/v1/music",
+        "body": {"key": "{{arg.key}}", "query": "{{arg.query}}", "quality": "{{arg.quality}}", "deliver": "inline"}}]
+    },
+    {
+      "name": "convert_targets",
+      "description": "Во что можно сконвертировать файл с таким именем (по расширению).",
+      "params": [{"name": "file_name", "type": "string", "description": "Имя файла, например отчёт.docx", "required": true}],
+      "steps": [{"name": "targets", "method": "GET", "url": "/api/v1/convert/targets?fileName={{arg.file_name}}"}]
+    },
+    {
+      "name": "send_converted",
+      "description": "Сконвертировать файл, который прислал человек (документы, таблицы, презентации, картинки, видео, звук, данные), и прислать результат в Telegram (до 50 МБ). Формат — из convert_targets.",
+      "params": [
+        {"name": "file", "type": "file", "description": "Что конвертировать", "required": true},
+        {"name": "to", "type": "string", "description": "Во что: pdf, docx, png, mp3…", "required": true}
+      ],
+      "steps": [{"name": "convert", "method": "POST", "url": "/api/v1/convert", "timeoutSeconds": 300,
+        "body": {"fileName": "{{arg.file.name}}", "base64": "{{arg.file.base64}}", "to": "{{arg.to}}",
+                 "deliver": "telegram", "chatId": "{{user.telegram_chat_id}}"}}]
+    },
+    {
+      "name": "get_converted",
+      "description": "Сконвертировать присланный файл и вернуть результат прямо в ответ (веб-чат) — если он не больше 4 МБ; иначе send_converted.",
+      "params": [
+        {"name": "file", "type": "file", "description": "Что конвертировать", "required": true},
+        {"name": "to", "type": "string", "description": "Во что: pdf, docx, png…", "required": true}
+      ],
+      "steps": [{"name": "convert", "method": "POST", "url": "/api/v1/convert", "timeoutSeconds": 300,
+        "body": {"fileName": "{{arg.file.name}}", "base64": "{{arg.file.base64}}", "to": "{{arg.to}}", "deliver": "inline"}}]
+    },
+    {
+      "name": "job_status",
+      "description": "Как идёт задача «прислать в Telegram» (send_media, send_track, send_converted): QUEUED, RUNNING, DONE (итог), FAILED (причина).",
+      "params": [{"name": "job_id", "type": "string", "description": "jobId из ответа", "required": true}],
+      "steps": [{"name": "job", "method": "GET", "url": "/api/v1/jobs/{{arg.job_id}}"}]
+    }
+  ]
+}
