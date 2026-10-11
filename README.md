@@ -152,6 +152,42 @@ https://oauth.yandex.ru/authorize?response_type=token&client_id=23cabbbdc6cd418a
 2. Положите файл в папку `cookies/` рядом с `docker-compose.yml`: она монтируется в контейнер как `/app/cookies`.
 3. Добавьте в `.env` строку `DOWNLOAD_YT_DLP_COOKIES_FILE=/app/cookies/cookies.txt` и выполните `make up`.
 
+## API для интеграций
+
+REST API (`/api/v1`) — всё, что бот умеет, для внешних систем (например, Turby): видео и звук по
+ссылке с обрезкой, поиск и скачивание музыки, конвертация файлов. Включается, когда в `.env` задан
+ключ:
+
+```env
+API_KEY=длинный-случайный-ключ
+# адрес хоста, на котором слушать (по умолчанию только 127.0.0.1); для локальной сети — LAN-IP
+API_BIND=192.168.1.10
+API_PORT=8090
+```
+
+Каждый запрос — с заголовком `X-Api-Key: <ключ>`. Без ключа API выключен целиком. Наружу (в интернет)
+открывайте только за nginx с HTTPS.
+
+Результат — поле `deliver`:
+
+- `telegram` (по умолчанию) — бот сам присылает файл в `chatId` (до 50 МБ, видео больше — частями).
+  Ответ — номер задачи, ход — `GET /api/v1/jobs/{jobId}`. Бот пишет только тем, кто нажал у него «Старт».
+- `inline` — файл прямо в ответе (`fileName`, `mime`, `size`, `base64`), если он не больше
+  `API_INLINE_MAX_BYTES` (по умолчанию 4 МБ); больше — ответ 413.
+
+| Запрос | Что делает |
+|---|---|
+| `GET /api/v1/info` | сайты, форматы, качество, музыкальные сервисы, из чего конвертирует |
+| `POST /api/v1/media` `{url, format?, quality?, start?, end?, deliver?, chatId?}` | видео или звук по ссылке; `start`/`end` — обрезка («1:23», «0:01:23:12») |
+| `GET /api/v1/music/search?q=…&provider=…` | поиск треков; `key` результата — для `POST /music` |
+| `POST /api/v1/music` `{key \| query, quality?, deliver?, chatId?}` | трек MP3: по `key` из поиска или первый найденный по `query` |
+| `GET /api/v1/convert/targets?fileName=…` | во что можно превратить файл |
+| `POST /api/v1/convert` `{fileName, base64, to, deliver?, chatId?}` | конвертация файла |
+| `GET /api/v1/jobs/{id}` | статус задачи «прислать в Telegram»: QUEUED, RUNNING, DONE, FAILED |
+
+Форматы: `MP4`, `MP3`, `WEBM`, `WEBP`; качество: `LOW`, `MEDIUM` (по умолчанию), `HIGH`. Ошибка —
+`{"error": "…"}` с кодом 400.
+
 ## Админка
 
 Доступна только пользователю с `TELEGRAM_ADMIN_ID`. Команды видны в меню только у него:

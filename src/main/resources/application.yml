@@ -1,6 +1,6 @@
+# веб (REST API для интеграций) включает BeefSaveBotApplication, когда задан API_KEY; свойство
+# spring.main.web-application-type здесь не задаём — оно перебило бы этот выбор
 spring:
-  main:
-    web-application-type: NONE
   datasource:
     url: ${SPRING_DATASOURCE_URL}
     username: ${SPRING_DATASOURCE_USERNAME}
@@ -51,3 +51,12 @@ download:
 logging:
   level:
     sql: debug
+
+# REST API (/api/v1, заголовок X-Api-Key): см. README → «API для интеграций»
+server:
+  port: ${API_PORT:8090}
+  address: ${API_ADDRESS:0.0.0.0}
+api:
+  key: ${API_KEY:}
+  # файл в ответе (deliver=inline) — не больше; крупнее — только в Telegram
+  inline-max-bytes: ${API_INLINE_MAX_BYTES:4194304}

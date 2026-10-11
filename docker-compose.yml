@@ -31,6 +31,9 @@ services:
       TELEGRAM_BOT_AUTHOR: ${TELEGRAM_BOT_AUTHOR:-@WhiteBeef}
       TELEGRAM_BOT_GITHUB_URL: ${TELEGRAM_BOT_GITHUB_URL:-https://github.com/WhiteBeef/BeefSaveBot}
       BOT_TIMEZONE: ${BOT_TIMEZONE:-Europe/Moscow}
+      # REST API для интеграций: включается, когда задан API_KEY
+      API_KEY: ${API_KEY:-}
+      API_INLINE_MAX_BYTES: ${API_INLINE_MAX_BYTES:-4194304}
       YANDEX_MUSIC_TOKEN: ${YANDEX_MUSIC_TOKEN:-}
       DOWNLOAD_YT_DLP_COOKIES_FILE: ${DOWNLOAD_YT_DLP_COOKIES_FILE:-}
       DOWNLOAD_YT_DLP_USER_AGENT: ${DOWNLOAD_YT_DLP_USER_AGENT:-}
@@ -45,6 +48,10 @@ services:
     volumes:
       - ./downloads:/app/downloads
       - ./cookies:/app/cookies
+    # API только в локальной сети: API_BIND — адрес хоста (LAN-IP; 0.0.0.0 — все интерфейсы, тогда
+    # закройте порт фаерволом снаружи или поставьте перед ним nginx с HTTPS)
+    ports:
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8090}:8090"
     restart: always
 volumes:
   pgdata:
