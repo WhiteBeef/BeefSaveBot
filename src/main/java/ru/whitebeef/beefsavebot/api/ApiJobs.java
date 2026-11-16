@@ -1,5 +1,6 @@
 package ru.whitebeef.beefsavebot.api;
 
+import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -36,6 +37,11 @@ public class ApiJobs {
   private final Map<String, Job> jobs = new ConcurrentHashMap<>();
   private final ExecutorService executor = Executors.newFixedThreadPool(4);
 
+  @PreDestroy
+  void shutdown() {
+    executor.shutdown();
+  }
+
   public Job submit(String what, Work work) {
     Instant now = Instant.now();
     jobs.values().removeIf(j -> j.createdAt().plus(KEEP).isBefore(now));
@@ -48,8 +54,13 @@ public class ApiJobs {
         jobs.computeIfPresent(id, (k, j) -> new Job(id, what, Status.DONE, result, null, j.createdAt(),
             Instant.now()));
       } catch (Exception e) {
-        String error = e instanceof UserFacingException ? e.getMessage() : "Не вышло: " + e.getMessage();
-        log.warn("API-задача {} ({}) не выполнена: {}", id, what, e.toString());
+        String error = e instanceof UserFacingException ? e.getMessage()
+            : "Не вышло: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+        if (e instanceof UserFacingException) {
+          log.warn("API-задача {} ({}) не выполнена: {}", id, what, e.getMessage());
+        } else {
+          log.error("API-задача {} ({}) не выполнена", id, what, e);
+        }
         jobs.computeIfPresent(id, (k, j) -> new Job(id, what, Status.FAILED, null, error, j.createdAt(),
             Instant.now()));
       }

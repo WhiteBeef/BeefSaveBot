@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -45,7 +46,9 @@ public class YandexMusicDownloadService implements DownloadService {
   private static final String SIGN_SECRET = "XGRlBW9FXlekgbPrRHuSiA";
 
   private final DownloadConfiguration downloadConfiguration;
-  private final HttpClient httpClient = HttpClient.newHttpClient();
+  private final HttpClient httpClient = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(10))
+      .build();
   private final ObjectMapper mapper = new ObjectMapper();
 
   @Override
@@ -74,6 +77,7 @@ public class YandexMusicDownloadService implements DownloadService {
       HttpRequest request = HttpRequest.newBuilder(
               URI.create("https://api.music.yandex.net/search?type=track&page=0&text=" + encodedQuery))
           .header("Authorization", "OAuth " + token)
+          .timeout(Duration.ofSeconds(30))
           .GET()
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -180,6 +184,7 @@ public class YandexMusicDownloadService implements DownloadService {
       HttpRequest request = HttpRequest.newBuilder(
               URI.create("https://api.music.yandex.net/tracks/" + trackId))
           .header("Authorization", "OAuth " + token)
+          .timeout(Duration.ofSeconds(30))
           .GET()
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -250,6 +255,7 @@ public class YandexMusicDownloadService implements DownloadService {
     HttpRequest request = HttpRequest.newBuilder(
             URI.create("https://api.music.yandex.net/tracks/" + trackId + "/download-info"))
         .header("Authorization", "OAuth " + token)
+        .timeout(Duration.ofSeconds(30))
         .GET()
         .build();
     HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -292,7 +298,10 @@ public class YandexMusicDownloadService implements DownloadService {
 
   private String resolveDirectLink(String downloadInfoUrl, String trackId)
       throws IOException, InterruptedException, NoSuchAlgorithmException {
-    HttpRequest request = HttpRequest.newBuilder(URI.create(downloadInfoUrl)).GET().build();
+    HttpRequest request = HttpRequest.newBuilder(URI.create(downloadInfoUrl))
+        .timeout(Duration.ofSeconds(30))
+        .GET()
+        .build();
     HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
     if (response.statusCode() != 200) {
       throw new RuntimeException(
@@ -315,12 +324,17 @@ public class YandexMusicDownloadService implements DownloadService {
   }
 
   private void downloadFile(String url, File target) throws IOException, InterruptedException {
-    HttpRequest request = HttpRequest.newBuilder(URI.create(url)).GET().build();
-    HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+    HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+        .timeout(Duration.ofMinutes(5))
+        .GET()
+        .build();
+    // Пишем ответ сразу на диск, не загружая трек целиком в память
+    HttpResponse<Path> response = httpClient.send(request,
+        HttpResponse.BodyHandlers.ofFile(target.toPath()));
     if (response.statusCode() != 200) {
+      Files.deleteIfExists(target.toPath());
       throw new RuntimeException("Не удалось скачать файл трека (HTTP " + response.statusCode() + ")");
     }
-    Files.write(target.toPath(), response.body());
   }
 
   @Override
