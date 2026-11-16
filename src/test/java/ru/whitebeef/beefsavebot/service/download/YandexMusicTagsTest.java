@@ -12,7 +12,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ru.whitebeef.beefsavebot.configuration.DownloadConfiguration;
-import ru.whitebeef.beefsavebot.service.download.YandexMusicDownloadService.TrackMeta;
 import ru.whitebeef.beefsavebot.service.media.MediaProcessingService;
 import ru.whitebeef.beefsavebot.service.media.MediaProcessingService.AudioTags;
 

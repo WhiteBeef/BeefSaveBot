@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -45,7 +46,9 @@ public class YandexMusicDownloadService implements DownloadService {
   private static final String SIGN_SECRET = "XGRlBW9FXlekgbPrRHuSiA";
 
   private final DownloadConfiguration downloadConfiguration;
-  private final HttpClient httpClient = HttpClient.newHttpClient();
+  private final HttpClient httpClient = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(10))
+      .build();
   private final ObjectMapper mapper = new ObjectMapper();
 
   @Override
@@ -55,12 +58,6 @@ public class YandexMusicDownloadService implements DownloadService {
       throw new RuntimeException("Не удалось разобрать ссылку на трек Яндекс Музыки");
     }
     return downloadTrackById(matcher.group(1), options.quality());
-  }
-
-  public record TrackSearchResult(String trackId, String artist, String title) {
-    public String display() {
-      return artist == null || artist.isBlank() ? title : artist + " - " + title;
-    }
   }
 
   public List<TrackSearchResult> search(String query) {
@@ -74,6 +71,7 @@ public class YandexMusicDownloadService implements DownloadService {
       HttpRequest request = HttpRequest.newBuilder(
               URI.create("https://api.music.yandex.net/search?type=track&page=0&text=" + encodedQuery))
           .header("Authorization", "OAuth " + token)
+          .timeout(Duration.ofSeconds(30))
           .GET()
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -160,26 +158,12 @@ public class YandexMusicDownloadService implements DownloadService {
     }
   }
 
-  record TrackMeta(String artist, String title, String album) {
-    String fileNameBase() {
-      String name = artist == null || artist.isBlank() ? title : artist + " - " + title;
-      return sanitizeFileName(name);
-    }
-
-    private static String sanitizeFileName(String name) {
-      String sanitized = name.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "").trim();
-      if (sanitized.length() > 150) {
-        sanitized = sanitized.substring(0, 150).trim();
-      }
-      return sanitized.isBlank() ? "audio_" + UUID.randomUUID() : sanitized;
-    }
-  }
-
   private TrackMeta fetchTrackMeta(String trackId, String token) {
     try {
       HttpRequest request = HttpRequest.newBuilder(
               URI.create("https://api.music.yandex.net/tracks/" + trackId))
           .header("Authorization", "OAuth " + token)
+          .timeout(Duration.ofSeconds(30))
           .GET()
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -211,18 +195,18 @@ public class YandexMusicDownloadService implements DownloadService {
   /**
    * Пишет теги через ffmpeg в ID3v2.3 (его понимают все плееры и Telegram) и дублирует в ID3v1.
    */
-  void writeId3Tags(File file, TrackMeta meta) {
+  public void writeId3Tags(File file, TrackMeta meta) {
     File tagged = new File(file.getParentFile(), "tagged_" + file.getName());
     try {
       List<String> command = new ArrayList<>(List.of("ffmpeg", "-hide_banner", "-loglevel",
           "error", "-y", "-i", file.getAbsolutePath(), "-map", "0:a", "-c", "copy",
           "-map_metadata", "-1", "-id3v2_version", "3", "-write_id3v1", "1",
-          "-metadata", "title=" + meta.title()));
-      if (meta.artist() != null && !meta.artist().isBlank()) {
-        command.addAll(List.of("-metadata", "artist=" + meta.artist()));
+          "-metadata", "title=" + meta.getTitle()));
+      if (meta.getArtist() != null && !meta.getArtist().isBlank()) {
+        command.addAll(List.of("-metadata", "artist=" + meta.getArtist()));
       }
-      if (meta.album() != null && !meta.album().isBlank()) {
-        command.addAll(List.of("-metadata", "album=" + meta.album()));
+      if (meta.getAlbum() != null && !meta.getAlbum().isBlank()) {
+        command.addAll(List.of("-metadata", "album=" + meta.getAlbum()));
       }
       command.add(tagged.getAbsolutePath());
       Process process = new ProcessBuilder(command).inheritIO().start();
@@ -236,7 +220,7 @@ public class YandexMusicDownloadService implements DownloadService {
       Files.move(tagged.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
     } catch (Exception e) {
       tagged.delete();
-      log.warn("Не удалось записать ID3-теги трека {} - {}: {}", meta.artist(), meta.title(),
+      log.warn("Не удалось записать ID3-теги трека {} - {}: {}", meta.getArtist(), meta.getTitle(),
           e.getMessage());
     }
   }
@@ -250,6 +234,7 @@ public class YandexMusicDownloadService implements DownloadService {
     HttpRequest request = HttpRequest.newBuilder(
             URI.create("https://api.music.yandex.net/tracks/" + trackId + "/download-info"))
         .header("Authorization", "OAuth " + token)
+        .timeout(Duration.ofSeconds(30))
         .GET()
         .build();
     HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -292,7 +277,10 @@ public class YandexMusicDownloadService implements DownloadService {
 
   private String resolveDirectLink(String downloadInfoUrl, String trackId)
       throws IOException, InterruptedException, NoSuchAlgorithmException {
-    HttpRequest request = HttpRequest.newBuilder(URI.create(downloadInfoUrl)).GET().build();
+    HttpRequest request = HttpRequest.newBuilder(URI.create(downloadInfoUrl))
+        .timeout(Duration.ofSeconds(30))
+        .GET()
+        .build();
     HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
     if (response.statusCode() != 200) {
       throw new RuntimeException(
@@ -315,12 +303,17 @@ public class YandexMusicDownloadService implements DownloadService {
   }
 
   private void downloadFile(String url, File target) throws IOException, InterruptedException {
-    HttpRequest request = HttpRequest.newBuilder(URI.create(url)).GET().build();
-    HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+    HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+        .timeout(Duration.ofMinutes(5))
+        .GET()
+        .build();
+    // Пишем ответ сразу на диск, не загружая трек целиком в память
+    HttpResponse<Path> response = httpClient.send(request,
+        HttpResponse.BodyHandlers.ofFile(target.toPath()));
     if (response.statusCode() != 200) {
+      Files.deleteIfExists(target.toPath());
       throw new RuntimeException("Не удалось скачать файл трека (HTTP " + response.statusCode() + ")");
     }
-    Files.write(target.toPath(), response.body());
   }
 
   @Override

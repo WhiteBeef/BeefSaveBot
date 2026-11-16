@@ -59,12 +59,12 @@ public class ConversionService {
   private final ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor();
 
   @PostConstruct
-  void startCleaner() {
+  public void startCleaner() {
     cleaner.scheduleAtFixedRate(this::removeExpired, 10, 10, TimeUnit.MINUTES);
   }
 
   @PreDestroy
-  void stopCleaner() {
+  public void stopCleaner() {
     cleaner.shutdownNow();
     sessions.values().forEach(this::close);
   }
@@ -188,6 +188,9 @@ public class ConversionService {
   }
 
   public Screen groupScreen(ConversionSession session, int groupIndex) {
+    if (groupIndex < 0 || groupIndex >= session.getGroups().size()) {
+      return overview(session);
+    }
     FormatGroup group = session.getGroups().get(groupIndex);
     String text = "Во что конвертировать " + Formats.category(group.getFormat()).getEmoji()
         + " <b>" + Formats.label(group.getFormat()) + "</b> (файлов: " + group.getFiles().size()
@@ -210,6 +213,9 @@ public class ConversionService {
   }
 
   public void select(ConversionSession session, int groupIndex, int targetIndex) {
+    if (groupIndex < 0 || groupIndex >= session.getGroups().size()) {
+      return;
+    }
     FormatGroup group = session.getGroups().get(groupIndex);
     group.setSelected(targetIndex < 0 || targetIndex >= group.getTargets().size() ? -1
         : targetIndex);

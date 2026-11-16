@@ -1,5 +1,6 @@
 package ru.whitebeef.beefsavebot.api;
 
+import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -19,39 +20,38 @@ import ru.whitebeef.beefsavebot.service.media.UserFacingException;
 @Component
 public class ApiJobs {
 
-  static final Duration KEEP = Duration.ofHours(24);
-
-  public enum Status { QUEUED, RUNNING, DONE, FAILED }
-
-  public record Job(String id, String what, Status status, String result, String error, Instant createdAt,
-                    Instant finishedAt) {
-  }
-
-  @FunctionalInterface
-  public interface Work {
-    /** @return итог словами («Отправил видео 23 МБ») */
-    String run() throws Exception;
-  }
+  private static final Duration KEEP = Duration.ofHours(24);
 
   private final Map<String, Job> jobs = new ConcurrentHashMap<>();
   private final ExecutorService executor = Executors.newFixedThreadPool(4);
 
-  public Job submit(String what, Work work) {
+  @PreDestroy
+  public void shutdown() {
+    executor.shutdown();
+  }
+
+  public Job submit(String what, JobWork work) {
     Instant now = Instant.now();
-    jobs.values().removeIf(j -> j.createdAt().plus(KEEP).isBefore(now));
+    jobs.values().removeIf(j -> j.getCreatedAt().plus(KEEP).isBefore(now));
     String id = UUID.randomUUID().toString().substring(0, 12);
-    jobs.put(id, new Job(id, what, Status.QUEUED, null, null, now, null));
+    jobs.put(id, new Job(id, what, JobStatus.QUEUED, null, null, now, null));
     executor.execute(() -> {
-      jobs.computeIfPresent(id, (k, j) -> new Job(id, what, Status.RUNNING, null, null, j.createdAt(), null));
+      jobs.computeIfPresent(id, (k, j) -> new Job(id, what, JobStatus.RUNNING, null, null,
+          j.getCreatedAt(), null));
       try {
         String result = work.run();
-        jobs.computeIfPresent(id, (k, j) -> new Job(id, what, Status.DONE, result, null, j.createdAt(),
-            Instant.now()));
+        jobs.computeIfPresent(id, (k, j) -> new Job(id, what, JobStatus.DONE, result, null,
+            j.getCreatedAt(), Instant.now()));
       } catch (Exception e) {
-        String error = e instanceof UserFacingException ? e.getMessage() : "Не вышло: " + e.getMessage();
-        log.warn("API-задача {} ({}) не выполнена: {}", id, what, e.toString());
-        jobs.computeIfPresent(id, (k, j) -> new Job(id, what, Status.FAILED, null, error, j.createdAt(),
-            Instant.now()));
+        String error = e instanceof UserFacingException ? e.getMessage()
+            : "Не вышло: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+        if (e instanceof UserFacingException) {
+          log.warn("API-задача {} ({}) не выполнена: {}", id, what, e.getMessage());
+        } else {
+          log.error("API-задача {} ({}) не выполнена", id, what, e);
+        }
+        jobs.computeIfPresent(id, (k, j) -> new Job(id, what, JobStatus.FAILED, null, error,
+            j.getCreatedAt(), Instant.now()));
       }
     });
     return jobs.get(id);

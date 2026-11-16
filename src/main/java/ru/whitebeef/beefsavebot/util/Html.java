@@ -9,6 +9,7 @@ public final class Html {
     if (text == null) {
       return "";
     }
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        .replace("\"", "&quot;");
   }
 }
