@@ -59,12 +59,12 @@ public class ConversionService {
   private final ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor();
 
   @PostConstruct
-  void startCleaner() {
+  public void startCleaner() {
     cleaner.scheduleAtFixedRate(this::removeExpired, 10, 10, TimeUnit.MINUTES);
   }
 
   @PreDestroy
-  void stopCleaner() {
+  public void stopCleaner() {
     cleaner.shutdownNow();
     sessions.values().forEach(this::close);
   }
