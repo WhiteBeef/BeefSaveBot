@@ -31,8 +31,8 @@ public class YandexMusicSearchProvider implements MusicSearchProvider {
   public List<TrackResult> search(String query, int limit) {
     return yandexMusicDownloadService.search(query).stream()
         .limit(limit)
-        .map(track -> new TrackResult(MusicProvider.YANDEX, track.trackId(), track.artist(),
-            track.title()))
+        .map(track -> new TrackResult(MusicProvider.YANDEX, track.getTrackId(), track.getArtist(),
+            track.getTitle()))
         .toList();
   }
 
