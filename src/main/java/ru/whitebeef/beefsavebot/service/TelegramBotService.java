@@ -2,6 +2,7 @@ package ru.whitebeef.beefsavebot.service;
 
 
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -138,6 +139,11 @@ public class TelegramBotService extends TelegramLongPollingBot {
       return;
     }
     registerCommands();
+  }
+
+  @PreDestroy
+  public void shutdown() {
+    executorService.shutdown();
   }
 
   private void registerCommands() {
@@ -1093,15 +1099,15 @@ public class TelegramBotService extends TelegramLongPollingBot {
       case "f" -> {
         answerCallback(callbackQuery, null);
         editScreen(chatId, messageId, conversionService.groupScreen(session,
-            Integer.parseInt(parts[2])));
+            parseIndex(parts, 2)));
       }
       case "s" -> {
         answerCallback(callbackQuery, null);
-        conversionService.select(session, Integer.parseInt(parts[2]), Integer.parseInt(parts[3]));
+        conversionService.select(session, parseIndex(parts, 2), parseIndex(parts, 3));
         editScreen(chatId, messageId, conversionService.overview(session));
       }
       case "t" -> runConversion(callbackQuery, session, userInfo,
-          () -> conversionService.convertSingle(session, Integer.parseInt(parts[2])));
+          () -> conversionService.convertSingle(session, parseIndex(parts, 2)));
       case "go" -> {
         if (session.getGroups().stream().allMatch(group -> group.getSelected() < 0)) {
           answerCallback(callbackQuery, "Выберите формат хотя бы для одного типа файлов", true);
@@ -1341,6 +1347,20 @@ public class TelegramBotService extends TelegramLongPollingBot {
         .build());
   }
 
+  /**
+   * Индекс из callback-кнопки; -1, если его нет или он не число.
+   */
+  private static int parseIndex(String[] parts, int i) {
+    if (parts.length <= i) {
+      return -1;
+    }
+    try {
+      return Integer.parseInt(parts[i]);
+    } catch (NumberFormatException e) {
+      return -1;
+    }
+  }
+
   private int parseNumber(String args, int defaultValue) {
     try {
       return args.isBlank() ? defaultValue : Math.max(1, Integer.parseInt(args.trim()));
@@ -1454,7 +1474,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
         }
       }
     } catch (IOException e) {
-      log.error("Ошибка при удалении временного файла");
+      log.error("Ошибка при удалении временного файла {}: {}", file, e.toString());
     }
   }
 
