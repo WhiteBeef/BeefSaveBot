@@ -222,8 +222,8 @@ public class BeefSaveApiController {
   // ─────────────────────────────── задачи ────────────────────────────────────
 
   @GetMapping("/jobs/{id}")
-  public ResponseEntity<ApiJobs.Job> job(@PathVariable String id) {
-    ApiJobs.Job j = jobs.get(id);
+  public ResponseEntity<Job> job(@PathVariable String id) {
+    Job j = jobs.get(id);
     return j == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(j);
   }
 
@@ -259,7 +259,7 @@ public class BeefSaveApiController {
       throw new UserFacingException("deliver — telegram или inline");
     }
     String chat = require(chatId, "chatId (Telegram, куда прислать)");
-    ApiJobs.Job job = jobs.submit(what, () -> {
+    Job job = jobs.submit(what, () -> {
       Result res = null;
       try {
         res = producer.make();
@@ -282,9 +282,9 @@ public class BeefSaveApiController {
       }
     });
     Map<String, Object> out = new LinkedHashMap<>();
-    out.put("jobId", job.id());
-    out.put("status", job.status());
-    out.put("message", "Принято: " + what + ". Бот пришлёт файл в Telegram; ход — GET /api/v1/jobs/" + job.id());
+    out.put("jobId", job.getId());
+    out.put("status", job.getStatus());
+    out.put("message", "Принято: " + what + ". Бот пришлёт файл в Telegram; ход — GET /api/v1/jobs/" + job.getId());
     return out;
   }
 
