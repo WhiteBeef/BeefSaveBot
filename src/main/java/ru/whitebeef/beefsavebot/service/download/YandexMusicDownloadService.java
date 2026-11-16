@@ -60,12 +60,6 @@ public class YandexMusicDownloadService implements DownloadService {
     return downloadTrackById(matcher.group(1), options.quality());
   }
 
-  public record TrackSearchResult(String trackId, String artist, String title) {
-    public String display() {
-      return artist == null || artist.isBlank() ? title : artist + " - " + title;
-    }
-  }
-
   public List<TrackSearchResult> search(String query) {
     String token = downloadConfiguration.getYandexMusicToken();
     if (token == null || token.isBlank()) {
@@ -164,21 +158,6 @@ public class YandexMusicDownloadService implements DownloadService {
     }
   }
 
-  record TrackMeta(String artist, String title, String album) {
-    String fileNameBase() {
-      String name = artist == null || artist.isBlank() ? title : artist + " - " + title;
-      return sanitizeFileName(name);
-    }
-
-    private static String sanitizeFileName(String name) {
-      String sanitized = name.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "").trim();
-      if (sanitized.length() > 150) {
-        sanitized = sanitized.substring(0, 150).trim();
-      }
-      return sanitized.isBlank() ? "audio_" + UUID.randomUUID() : sanitized;
-    }
-  }
-
   private TrackMeta fetchTrackMeta(String trackId, String token) {
     try {
       HttpRequest request = HttpRequest.newBuilder(
@@ -216,18 +195,18 @@ public class YandexMusicDownloadService implements DownloadService {
   /**
    * Пишет теги через ffmpeg в ID3v2.3 (его понимают все плееры и Telegram) и дублирует в ID3v1.
    */
-  void writeId3Tags(File file, TrackMeta meta) {
+  public void writeId3Tags(File file, TrackMeta meta) {
     File tagged = new File(file.getParentFile(), "tagged_" + file.getName());
     try {
       List<String> command = new ArrayList<>(List.of("ffmpeg", "-hide_banner", "-loglevel",
           "error", "-y", "-i", file.getAbsolutePath(), "-map", "0:a", "-c", "copy",
           "-map_metadata", "-1", "-id3v2_version", "3", "-write_id3v1", "1",
-          "-metadata", "title=" + meta.title()));
-      if (meta.artist() != null && !meta.artist().isBlank()) {
-        command.addAll(List.of("-metadata", "artist=" + meta.artist()));
+          "-metadata", "title=" + meta.getTitle()));
+      if (meta.getArtist() != null && !meta.getArtist().isBlank()) {
+        command.addAll(List.of("-metadata", "artist=" + meta.getArtist()));
       }
-      if (meta.album() != null && !meta.album().isBlank()) {
-        command.addAll(List.of("-metadata", "album=" + meta.album()));
+      if (meta.getAlbum() != null && !meta.getAlbum().isBlank()) {
+        command.addAll(List.of("-metadata", "album=" + meta.getAlbum()));
       }
       command.add(tagged.getAbsolutePath());
       Process process = new ProcessBuilder(command).inheritIO().start();
@@ -241,7 +220,7 @@ public class YandexMusicDownloadService implements DownloadService {
       Files.move(tagged.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
     } catch (Exception e) {
       tagged.delete();
-      log.warn("Не удалось записать ID3-теги трека {} - {}: {}", meta.artist(), meta.title(),
+      log.warn("Не удалось записать ID3-теги трека {} - {}: {}", meta.getArtist(), meta.getTitle(),
           e.getMessage());
     }
   }
